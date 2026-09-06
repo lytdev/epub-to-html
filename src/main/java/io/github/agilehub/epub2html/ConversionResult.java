@@ -28,6 +28,8 @@ public record ConversionResult(Path htmlFile, Path mediaDirectory, List<String> 
      * @param tocEntries 从导航文档读取的目录项数量
      */
     public ConversionResult {
+        // 紧凑构造器没有额外校验；record 随后自动把四个参数赋给对应字段。
+        // 转换器会传入不可修改的资源清单，但调用方自行构造时不会自动复制列表。
     }
 
     /**

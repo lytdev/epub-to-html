@@ -7,6 +7,10 @@ import java.io.IOException;
  *
  * <p>{@link EpubConverter} 在合并正文时调用本接口，并将返回值回写至对应 HTML 元素。Spring Boot
  * 调用方可实现为本地文件存储、阿里云 OSS 上传或 Base64 内嵌；实现必须在本次调用中完成资源消费，且不得返回空 URL。</p>
+ *
+ * <p>这是策略模式的扩展点：方法签名只有一个，因此既可写实现类，也可写 Lambda。
+ * {@link MediaProcessor} 对每个归档路径成功调用一次，并在单次转换内复用返回 URL。
+ * 同一处理器若用于多个并发转换，线程安全由实现者保证。
  */
 @FunctionalInterface
 public interface EpubResourceHandler {

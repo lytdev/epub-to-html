@@ -12,7 +12,9 @@ import java.util.Objects;
  * 输出路径保留 EPUB 内部目录层级，以避免同名资源相互覆盖；同时会拒绝越出目标目录的路径。</p>
  */
 public final class LocalResourceHandler implements EpubResourceHandler {
+    /** 本地保存根目录，构造时转为绝对路径，供后续边界比较。 */
     private final Path directory;
+    /** 返回给 HTML 的地址前缀，与本地文件系统路径是两个不同概念。 */
     private final String urlPrefix;
 
     /**
@@ -23,7 +25,9 @@ public final class LocalResourceHandler implements EpubResourceHandler {
      * @throws NullPointerException 当任一参数为 {@code null} 时抛出
      */
     public LocalResourceHandler(Path directory, String urlPrefix) {
+        // 归一化消除路径中的点段，后续保存时才能用同一标准比较父子路径。
         this.directory = Objects.requireNonNull(directory, "directory").toAbsolutePath().normalize();
+        // 去掉末尾斜杠，后续统一在前缀和资源路径之间添加一个斜杠。
         this.urlPrefix = Objects.requireNonNull(urlPrefix, "urlPrefix").replaceAll("/+$", "");
     }
 
@@ -37,11 +41,15 @@ public final class LocalResourceHandler implements EpubResourceHandler {
      */
     @Override
     public String handle(EpubResource resource) throws IOException {
+        // 保留归档目录结构，减少不同目录下同名图片的冲突；冒号替换为下划线。
         String relativePath = resource.archivePath().replace(':', '_').replace('\\', '/');
+        // 合成并归一化实际落盘路径，检查 .. 等点段是否使路径越过保存根目录。
         Path target = directory.resolve(relativePath).normalize();
         if (!target.startsWith(directory)) throw new IOException("Unsafe EPUB resource path: " + resource.archivePath());
+        // 资源可能在多级目录内，先创建父目录，再写入原始字节；已有文件会被覆盖。
         Files.createDirectories(target.getParent());
         Files.write(target, resource.content());
+        // HTML 需要可访问 URL，不应直接写入服务器上的绝对文件路径。
         return urlPrefix.isEmpty() ? relativePath : urlPrefix + "/" + relativePath;
     }
 }
