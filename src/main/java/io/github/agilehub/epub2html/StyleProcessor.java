@@ -79,15 +79,40 @@ final class StyleProcessor {
     // 汇总外部样式文本；每个顶层样式表有独立的循环导入检测集合。
     StringBuilder css = new StringBuilder();
     for (String file : cssFiles) appendCss(zip, file, css, new HashSet<>());
-    // 按扫描顺序应用规则。匹配后写入 style，而非计算浏览器最终渲染样式。
+    // 原始内联样式与外部规则分开保存，避免把前一条 CSS 误当成高优先级内联样式。
+    Map<Element, StringBuilder> matchedStyles = new LinkedHashMap<>();
     for (CssRule rule : CssRule.parse(css.toString())) {
       try {
-        for (Element element : doc.select(rule.selector()))
-          element.attr("style", mergeStyles(element.attr("style"), rule.declarations()));
+        for (Element element : doc.select(rule.selector())) {
+          StringBuilder declarations =
+              matchedStyles.computeIfAbsent(element, ignored -> new StringBuilder());
+          appendDeclarations(declarations, rule.declarations());
+        }
       } catch (Exception ignored) {
         /* 不支持的选择器不阻断整本书转换。 */
       }
     }
+    // 匹配结束后统一回写，既保留规则顺序，也避免 [style] 选择器受中途修改影响。
+    matchedStyles.forEach((element, declarations) ->
+        element.attr("style", mergeStyles(element.attr("style"), declarations.toString())));
+  }
+
+  /**
+   * 将一个规则的声明追加到缓冲区，仅在末尾缺少分隔符时补充分号。
+   *
+   * <p>CSS 规则通常已经以分号结尾，无条件追加会产生双分号。
+   * 此方法只处理声明块边界，不替换内容内部的分号，以免破坏字符串和 data URL。
+   *
+   * @param target 按规则顺序累计的声明缓冲区
+   * @param declarations 当前规则声明，可为空或带尾部空白
+   */
+  private static void appendDeclarations(StringBuilder target, String declarations) {
+    String value = declarations.trim();
+    if (value.isEmpty()) return;
+    target.append(value);
+    // 原规则已提供终止分号时直接复用，不再额外添加一个。
+    if (!value.endsWith(";")) target.append(';');
+    target.append(' ');
   }
 
 
@@ -119,39 +144,20 @@ final class StyleProcessor {
   /**
    * 合并规则声明与元素已有声明，返回新的 style 字符串。
    *
-   * <p>已有 inline 同名属性覆盖 declarations；此前规则也已写入 inline，因此先应用的规则可能压过后续规则。本方法没有实现 CSS specificity 或 !important 优先级。
+   * <p>外部声明保持源码顺序，原始内联声明放在最后。不能按属性名去重：
+   * margin 与 margin-bottom 等简写和长写之间存在覆盖关系，重复声明也可能是兼容性回退。
+   * 保留声明和 !important 交由浏览器解释；本方法不计算选择器 specificity。
    *
    * @param inline 元素当前 style 属性，可为空字符串
    * @param declarations 当前规则的大括号内声明
    * @return 以分号和空格连接的属性声明
    */
   static String mergeStyles(String inline, String declarations) {
-    LinkedHashMap<String, String> styles = new LinkedHashMap<>();
-    // 先写新规则，再用元素已有 style 覆盖同名属性。
-    addDeclarations(styles, declarations);
-    addDeclarations(styles, inline);
-    // 把属性映射重新拼接成 HTML style 属性使用的字符串。
-    return styles.entrySet().stream()
-        .map(e -> e.getKey() + ": " + e.getValue())
-        .collect(java.util.stream.Collectors.joining("; "));
+    // 仅整理声明之间的边界，不拆分属性值，避免破坏 data URL 或字符串里的分号。
+    String external = declarations.trim();
+    String original = inline.trim();
+    if (external.isEmpty()) return original;
+    if (original.isEmpty()) return external;
+    return external + (external.endsWith(";") ? " " : "; ") + original;
   }
-
-
-  /**
-   * 把声明字符串加入属性映射，同名属性以本次写入值覆盖。
-   *
-   * <p>按分号分段并以首个冒号拆分属性和值；无法正确处理字符串或 data URL 内部的分号，无有效冒号的片段被忽略。
-   *
-   * @param styles 要修改的属性名到属性值映射
-   * @param source 待拆分的声明文本
-   */
-  static void addDeclarations(Map<String, String> styles, String source) {
-    for (String declaration : source.split(";")) {
-      // 只取第一个冒号分隔属性名与值；没有有效属性名的片段忽略。
-      int colon = declaration.indexOf(':');
-      if (colon > 0)
-        styles.put(declaration.substring(0, colon).trim(), declaration.substring(colon + 1).trim());
-    }
-  }
-
 }

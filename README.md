@@ -1,10 +1,10 @@
 # epub2Html4j
 
-基于 JDK 21 的 Maven 转换库：按 EPUB 的阅读顺序合并正文为一个 HTML 文件，根据目录插入 h1～h6 标题，尽力将外部 CSS 转为内联样式，并通过统一接口处理图片、音频、视频等资源。
+基于 JDK 21 的 Maven 解析库：按 EPUB 目录读取正文并返回 List<TocItem> 章节树。每个节点的 content 保存正文 HTML 片段，不再插入目录标题；章节标题独立保存在 label 中，尽力将外部 CSS 转为内联样式，并通过统一接口处理图片、音频、视频等资源。
 
 项目采用“门面入口 → 转换流水线 → 专职组件”的结构，适合嵌入 Spring Boot 等 Java 应用。宿主项目负责文件接收、静态资源路由以及云端上传等业务；本库不包含 HTTP 服务、数据库、OSS SDK 或命令行入口。
 
-“单个 HTML”指正文合并：使用本地或云存储策略时，页面仍需访问外部资源。源码包含中文职责说明、方法参数与返回值说明，以及关键循环、递归和文件读写注释，阅读路线见第 1 节。
+库不合并整书 HTML，也不将 HTML 写入本地；最终展示和存储由调用方决定。使用本地或云存储策略时，content 中仍引用外部资源。源码包含中文职责说明、方法参数与返回值说明，以及关键循环、递归和归档读取注释，阅读路线见第 1 节。
 
 ## 快速开始
 
@@ -35,309 +35,294 @@ mvn install
 
 Shade 未重定位 jsoup 包名，宿主若同时包含另一版本 jsoup，应检查依赖冲突。
 
-### 本地资源
+### 公开 API 与迁移说明
+
+提供 Path 和 InputStream 两种输入，各有默认重载和清理选项重载，均返回已填充内容的目录树：
 
 ~~~java
-import io.github.agilehub.epub2html.ConversionResult;
+List<TocItem> convert(Path epub, EpubResourceHandler resourceHandler) throws IOException;
+List<TocItem> convert(InputStream epubInput, EpubResourceHandler resourceHandler) throws IOException;
+List<TocItem> convert(Path epub, EpubResourceHandler resourceHandler, boolean removeClasses) throws IOException;
+List<TocItem> convert(InputStream epubInput, EpubResourceHandler resourceHandler, boolean removeClasses) throws IOException;
+~~~
+
+removeClasses 默认 false，保留正文的 class 和 id。传入 true 时，在章节定位、样式内联、资源处理完成后，同时删除所有正文元素的 class 和 id，再保存 content；保留 style、src 等其他属性，不修改 TocItem.target 和 children。
+
+~~~java
+List<TocItem> chapters = new EpubConverter().convert(input, resourceHandler, true);
+~~~
+
+注意：尽管选项名为 removeClasses，启用后也会删除 id。正文中的锚点链接、SVG 内部引用、宿主按 class/id 绑定的样式或交互可能因此失效；库不会重写这些引用。选项仅作用于本次调用，不改变转换器后续调用的默认行为。
+
+这是不兼容的 API 调整：删除带 outputHtml / mediaDirectory 参数的旧重载，以及 ConversionResult；输入流重载不再返回 String。调用方需改为接收 List<TocItem>，自行决定展示、合并、接口响应或持久化。库不生成完整 HTML，也不写入 HTML 文件。
+
+### Spring Boot：上传文件解析为章节树
+
+以下代码放在宿主服务方法内；file 为 MultipartFile，resourceHandler 为宿主提供的同步资源策略：
+
+~~~java
 import io.github.agilehub.epub2html.EpubConverter;
+import io.github.agilehub.epub2html.TocItem;
+import java.io.InputStream;
+import java.util.List;
+
+try (InputStream input = file.getInputStream()) {
+    List<TocItem> chapters = new EpubConverter().convert(input, resourceHandler);
+    return chapters; // 宿主自行返回 JSON、展示或保存，不需要先合并 HTML。
+}
+~~~
+
+输入流从当前位置读取到结束，不要求 mark/reset，库不关闭调用方的流。
+内部 TemporaryEpub 将 EPUB 暂存到系统临时目录供 ZipFile 随机读取，在成功或失败时清理；清理失败通过异常报告。因此输入流方案需要可写临时目录，并非完全无磁盘。
+返回之前已读取全部章节并关闭归档，之后仍可访问和修改目录树。
+
+### 文件输入与资源策略
+
+~~~java
+import io.github.agilehub.epub2html.*;
 import java.nio.file.Path;
-
-Path epub = Path.of("book.epub");
-Path html = Path.of("output/book.html");
-Path media = Path.of("output/media");
-ConversionResult result = new EpubConverter().convert(epub, html, media);
-~~~
-
-便捷重载使用资源目录的最后一级名称作为 URL 前缀，生成类似 media/OPS/image/a.png 的引用，因此通常要求 HTML 与资源目录同级。实际磁盘目录和访问地址不同的场景，可显式指定：
-
-~~~java
-import io.github.agilehub.epub2html.LocalResourceHandler;
-
-new EpubConverter().convert(epub, html,
-    new LocalResourceHandler(Path.of("storage/book-assets"), "/assets/book-001"));
-~~~
-
-宿主需自行把 /assets/book-001 映射到实际存储目录，库不会配置 HTTP 路由。
-
-### 自定义策略与 Base64
-
-实现 EpubResourceHandler.handle 即可接入 OSS 等服务。输入包含 archivePath、mediaType 和 content；方法应同步完成处理并返回非空白 URL。以下是接口接入示意，上传实现由业务项目提供：
-
-~~~java
-import io.github.agilehub.epub2html.EpubResourceHandler;
-
-EpubResourceHandler handler = resource -> {
-    // 在这里完成真实上传：内容为 resource.content()。
-    // objectKey 建议包含书籍标识，避免不同书的同名资源覆盖。
-    // MIME 可取 resource.mediaType()；最终返回实际可访问的地址。
-    return "https://cdn.example.com/book-001/" + resource.archivePath();
-};
-new EpubConverter().convert(epub, html, handler);
-~~~
-
-上述占位代码只返回地址，本身不会上传。Base64 方式则可直接使用：
-
-~~~java
+import java.util.List;
 import java.util.Base64;
 
-new EpubConverter().convert(epub, html, resource ->
-    "data:" + resource.mediaType() + ";base64," +
-        Base64.getEncoder().encodeToString(resource.content()));
+// 本地媒体存储是调用方显式选择的策略，并不保存章节 HTML。
+List<TocItem> chapters = new EpubConverter().convert(
+    Path.of("book.epub"),
+    new LocalResourceHandler(Path.of("storage/book-assets"), "/assets/book-001"));
+
+// 不保存媒体文件：将资源编码为 data URL，直接写入对应节点的 content。
+List<TocItem> embedded = new EpubConverter().convert(
+    Path.of("book.epub"),
+    resource -> "data:" + resource.mediaType() + ";base64,"
+        + Base64.getEncoder().encodeToString(resource.content()));
 ~~~
 
-Base64 会增大 HTML。转换器不会等待额外的异步任务，仅提交上传任务便返回地址不能保证资源已可用。content() 返回原数组，不做防御性复制；异步代码保留资源时应自行管理生命周期与并发访问。
+宿主需自行将 /assets/book-001 映射到实际存储目录；库不配置 HTTP 路由。
+OSS 等存储由宿主实现 EpubResourceHandler.handle：同步消费 archivePath、mediaType、content 并返回非空白 URL。相同归档路径在一次转换中只调用一次，跨转换不共享缓存。
+Base64 会增加 content 大小。上传失败不会自动回滚已经保存的资源；幂等、清理和事务补偿由宿主负责。
 
-### 结果含义
+### 返回值约定
 
-| 访问器 | 含义 |
+| 字段 / 访问器 | 含义 |
 | --- | --- |
-| htmlFile() | 已写出的 HTML 文件路径。 |
-| mediaDirectory() | 本地目录重载传入的目录；处理器重载为 null，即使使用 LocalResourceHandler。 |
-| copiedMedia() | 成功处理的归档路径，按首次处理顺序去重；不是最终 URL，也不意味着一定复制到本地。 |
-| tocEntries() | 解析到的目录项数；缺失锚点可能导致对应标题未插入。 |
+| 根 List<TocItem> | 只包含根章节，保留目录顺序；无目录时按 spine 创建无标题节点。 |
+| getTarget() | EPUB 内部路径，可含 #锚点；无链接分组为 null，不是外部访问 URL。 |
+| getLevel() | 从 1 开始的原始层级；不再据此生成正文标题。 |
+| getLabel() | 目录标题。 |
+| getContent() | 本节点正文的 HTML 片段（不插入 label 标题），不含 html/body 外壳，也不含子章节正文。 |
+| getChildren() | 直接子节点，叶子为空列表。 |
 
-## 1. 项目组织结构与阅读指引
+返回列表和节点可修改，调用方不得引入循环引用，跨线程共享需自行同步。setContent(null) 归一为空字符串。
+资源数量、最终地址和上传记录如需审计，请在调用方的处理器中记录，不再通过 ConversionResult 获取。
 
-### 目录树
+## 1. 项目组织结构
 
 ~~~text
-epub2Html4j/
-├── pom.xml
-├── README.md
-├── demo.epub
-├── src/main/java/io/github/agilehub/epub2html/
-│   ├── EpubConverter.java          # 公开门面
-│   ├── ConversionPipeline.java     # 单次转换编排
-│   ├── PackageReader.java          # container.xml / OPF 解析
-│   ├── NavigationReader.java       # NCX / EPUB 3 导航
-│   ├── StyleProcessor.java         # CSS 收集与内联
-│   ├── HeadingProcessor.java       # 插入目录标题
-│   ├── MediaProcessor.java         # 资源处理与地址回写
-│   ├── HtmlAssembler.java          # 章节合并与输出
-│   ├── EpubArchive.java            # ZIP 条目读取
-│   ├── EpubXml.java                # 安全 XML 解析
-│   ├── EpubPaths.java              # 归档引用解析
-│   ├── PackageData.java            # 内部包信息
-│   ├── TocItem.java                # 内部目录项
-│   ├── EpubResourceHandler.java    # 公开资源策略接口
-│   ├── LocalResourceHandler.java   # 默认本地实现
-│   ├── EpubResource.java           # 公开资源数据
-│   └── ConversionResult.java       # 公开转换结果
-├── src/test/java/io/github/agilehub/epub2html/
-│   ├── EpubConverterTest.java
-│   └── ConversionPipelineTest.java
-└── target/                         # 构建产物与测试报告
+src/main/java/io/github/agilehub/epub2html/
+├── EpubConverter.java          # Path / InputStream 公开入口
+├── TemporaryEpub.java          # 输入流暂存及清理
+├── ConversionPipeline.java     # 读取目录 → 填充内容 → 返回树
+├── NavigationReader.java       # NCX / EPUB 3 目录树
+├── TocItem.java                # target、level、label、content、children
+├── TocContentReader.java       # 根据目录目标填充 content
+├── ChapterRange.java           # 同页锚点区间裁剪
+├── HeadingProcessor.java       # 历史标题工具（不再用于转换流水线）
+├── StyleProcessor.java         # CSS 内联
+├── MediaProcessor.java         # HTML / SVG 资源处理
+├── FigureProcessor.java        # 图片与紧邻图注组合为 figure
+├── EpubResourceHandler.java    # 调用方资源策略
+├── LocalResourceHandler.java   # 本地存储实现
+├── EpubResource.java           # 资源数据
+├── PackageReader.java          # container.xml / OPF
+├── PackageData.java            # 包信息
+├── EpubArchive.java            # 归档条目读取
+├── EpubXml.java                # XML 安全解析
+└── EpubPaths.java              # 引用路径处理
 ~~~
 
-这是一个 Maven 模块、一个 Java 包。分层指职责分层；除门面、资源接口、本地实现及两个公开数据对象外，其余组件均为 package-private，供包内协作。
+HtmlAssembler、TocHtmlWriter 和 ConversionResult 已移除。库只填充并返回 TocItem 内容树；最终输出完全由调用方负责。项目仍是一个 Maven 模块，内部处理器保持包内可见。
 
-### 职责边界
-
-| 层次 | 组件 | 职责与边界 |
-| --- | --- | --- |
-| 门面 | EpubConverter | 校验输入、准备输出父目录、适配本地重载；不实现解析算法。 |
-| 编排 | ConversionPipeline | 管理归档生命周期、目录索引和资源缓存，按顺序调用各阶段。 |
-| 读取 | PackageReader、NavigationReader | 分别得到阅读顺序与导航层级，不操作媒体存储。 |
-| 章节处理 | StyleProcessor、HeadingProcessor、MediaProcessor | 分别原地修改样式、标题和媒体引用；不共享跨转换状态。 |
-| 输出 | HtmlAssembler | 持有本次转换的结果 DOM，移动章节节点并写出 HTML。 |
-| 基础工具 | EpubArchive、EpubXml、EpubPaths | 封装条目读取、XML 安全设置及路径解析。 |
-| 策略与数据 | EpubResourceHandler、LocalResourceHandler、各 record | 隔离存储差异，传递资源、目录、包信息与输出摘要。 |
-
-### 初学者阅读顺序
-
-1. 从 EpubConverter.convert 开始，区分两个重载及本地策略的适配过程。
-2. 阅读 ConversionPipeline.convert 和 processChapter，先了解完整流程。
-3. 阅读 PackageReader 和 PackageData，理解 manifest 是文件索引、spine 是阅读顺序。
-4. 阅读 NavigationReader、TocItem、HeadingProcessor，跟踪目录树如何递归展开，再定位到正文。
-5. 阅读 StyleProcessor、MediaProcessor，理解 DOM 修改与回调去重。
-6. 阅读 HtmlAssembler；遇到归档、路径和 XML 细节，再查询三个基础工具类。
-
-中文类注释解释职责和上下游，方法 Javadoc 说明参数、结果、副作用和异常，内部注释解释关键分支与资源关闭责任。void 方法可能直接修改传入的文档或集合，不一定需要返回新对象。record 自动生成同名访问器，但其中的数组、集合不会因此自动深度不可变。
-
-## 2. 核心技术方案
-
-### 业务问题与选型
-
-EPUB 将正文、样式和媒体放在 ZIP 中，正文可能分散于多个 XHTML 文件。需要分别解决阅读顺序、导航层级、相对引用和输出文件组织，才能生成可供宿主展示的 HTML。
-
-| 技术或模式 | 当前用途 |
+| 组件 | 职责与边界 |
 | --- | --- |
-| JDK 21 ZipFile | 打开 EPUB 并读取条目，由 try-with-resources 关闭。 |
-| JAXP DOM | 读取容器、OPF、NCX，统一禁用外部 DTD/实体读取。 |
-| Jsoup 1.18.3 | XML 模式读取 XHTML，选择和修改节点，HTML 模式序列化结果。不是浏览器布局引擎。 |
-| 门面模式 | EpubConverter 保持公开 API 稳定，隐藏内部拆分。 |
-| 顺序流水线 | ConversionPipeline 组合各阶段，集中控制顺序与状态。 |
-| 策略模式 | EpubResourceHandler 支持宿主选择本地、对象存储或编码实现。 |
-| Shade 3.6.0 | 生成附带 jsoup 的 all 构件，同时保留常规 JAR。 |
-| JUnit 5.11.4 / Surefire 3.5.2 | 执行真实样例和小型多章节回归测试。 |
+| EpubConverter | 参数校验、Path / InputStream 输入适配并返回章节树。 |
+| ConversionPipeline | 管理归档生命周期，填充内容后关闭归档并返回树。 |
+| NavigationReader / PackageReader | 提供目录树和包描述，不读取正文内容。 |
+| TocContentReader | 遍历树建立目标读取计划，逐文件处理并填充节点自身内容。 |
+| ChapterRange | 根据节点位置裁剪 HTML，保留区间内正文及必要祖先结构。 |
+| 样式、标题、媒体处理器 | 复用现有转换规则，不直接负责整书拼接。 |
 
-### 数据流
+初学者建议依次阅读 EpubConverter、ConversionPipeline、TocItem、TocContentReader、ChapterRange，再查看各专项处理器。中文 Javadoc 解释参数和结果，行内注释解释去重、区间裁剪及生命周期。
+
+## 2. 目录驱动的技术方案
+
+### 内容模型
 
 ~~~text
-EPUB Path
-  → ZipFile
-  → PackageReader → PackageData(spine, ncx, nav)
-  → NavigationReader → List<TocItem> → 按目标分组
-  → 按 spine 逐章读取 Jsoup Document
-      → StyleProcessor
-      → HeadingProcessor
-      → MediaProcessor → EpubResourceHandler → 最终 URL
-      → HtmlAssembler.append
-  → HtmlAssembler.write → HTML 文件
-  → ConversionResult
+List<TocItem>
+└── 第一章
+    ├── target = OPS/a.xhtml
+    ├── level = 1
+    ├── content = 本章引言
+    └── children
+        ├── 第一节
+        │   ├── target = OPS/a.xhtml#one
+        │   ├── content = 第一节正文
+        │   └── children = []
+        └── 第二节
+            ├── target = OPS/a.xhtml#two
+            ├── content = 第二节正文
+            └── children = []
 ~~~
 
-各阶段的实际行为：
+getContent() 返回本节点的 HTML 片段（不插入目录标题，不含 html/body 外壳），不包含 children 的正文。setContent(null) 保存为空字符串。getChildren() 返回直接子节点，叶子为空列表。
 
-1. **书籍结构**：从固定入口 META-INF/container.xml 取第一个 rootfile，定位 OPF。manifest 的 ID 映射为路径，再按 spine 的 idref 顺序得到章节。无法映射的 idref 被跳过，空 spine 报错。
-2. **目录解析**：优先使用存在的 NCX，否则读取 OPF 标记的 EPUB 3 导航文件；不要求文件名为 nav.xhtml。选中 NCX 后解析失败直接报错，不回退。无可用导航时返回空目录。
-3. **样式处理**：收集 link 引用的 CSS，递归读取导入文件，然后用简化规则匹配原章节 DOM。该步骤先于新增标题。
-4. **标题处理**：按目标文件和 #fragment 定位锚点。无片段时插入章节开头；有片段时插入对应元素之前；缺失锚点则跳过。深度超过 6 时使用 h6，并保存原始层级。不会删除原标题或按目录重排正文。
-5. **媒体处理**：对支持标签优先选 src，没有 src 时选 data。查到资源后完整读为 byte[]，同步调用策略，缓存非空白返回值并回写属性。
-6. **正文合并**：把章节 body 子节点移动到 section.epub-chapter 中。所有章节完成后直接写出目标 HTML。
+### 完整处理链路
 
-资源缓存位于章节循环之外、单次调用之内：同一本书跨章节复用 URL，新转换会重新处理。HtmlAssembler 同样每次创建，不能跨转换共享。宿主若并发复用处理器，需保证其线程安全并隔离输出路径。
+~~~text
+EPUB / 输入流
+ → PackageReader + NavigationReader
+ → List<TocItem> 根目录树
+ → TocContentReader.read
+     → 递归访问 target，按归档文件分组
+     → 每个 XHTML 只解析一次
+     → 在完整 DOM 上内联 CSS
+     → ChapterRange 按同文件锚点划分不重叠区间
+     → 每个片段处理资源和图注
+     → 保存到当前 TocItem.content
+ → 关闭 ZipFile
+ → 返回 List<TocItem>
+ → 调用方决定展示、合并或持久化
+~~~
 
-### 当前限制与失败行为
+读取计划按目录先序遍历的首次出现顺序建立。同一文件的各片段先在一起读取，返回树保留原目录层级和顺序，文件分组不改变树结构。
 
-| 范围 | 当前实现与边界 |
+### 目录与区间规则
+
+| 情况 | 当前行为 |
 | --- | --- |
-| CSS 优先级 | 已有 style 覆盖当前规则；先前规则也已经写入 style，可能压过后续规则。不实现完整 specificity、!important 或媒体条件。 |
-| CSS 来源 | 仅收集链接样式，未收集 head 内 style；目前删除所有带 href 的 link。正则及分号/逗号拆分不适合复杂 CSS。 |
-| EPUB 3 目录 | 取首个匹配 nav；存在多个 nav 时不保证优先选择 toc。 |
-| 媒体覆盖范围 | 支持 img/audio/video/source/track/object/embed；不处理 poster、srcset、CSS url 或 SVG 内部引用。 |
-| 外部引用 | data:、纯片段和带 scheme 的 URI 跳过读取；//host/path 当前不被识别为外部地址。 |
-| 文档合并 | 不复制章节 head 或 body 自身属性；未处理跨章节链接和全书重复 id。 |
-| 编码与类型 | 文本按 UTF-8 解码；MIME 来自文件名推断，不读取 OPF 的媒体类型或检查字节。 |
-| 内存 | 最终 DOM 累积整本书，每个媒体完整读入内存；没有大小上限或流式处理接口。 |
-| 异常 | 读取/XML/策略失败可抛 IOException；非法 URI、空参数等也可能抛运行时异常。可选 CSS/媒体缺失会跳过。 |
-| 输出一致性 | 直接覆盖 HTML，没有原子替换；失败可能留下部分文件。已落盘或上传的资源不自动回滚。 |
+| 存在目录 | 只读取 target 引用的文件，即使目标不在 spine 中也可读取；未被目录引用的独立文件不会自动追加。 |
+| 没有目录 | 使用 spine 创建无标题节点，填充 content 后返回。 |
+| target 无片段或片段为空 | 以目标文件 body 开头为起点。 |
+| 同文件多个锚点 | 按原 DOM 的锚点先序位置划分区间，当前起点包含、下一起点不包含；最后一个延续到文件末尾。 |
+| 父子共用文件 | 父项只保留子项开始前的内容，不重复包含子项整段正文。 |
+| 多项指向相同位置 | 标题保留在各项 label 中；正文只分配给该位置最后一个目录项，其余 content 为空。 |
+| 无链接分组 | content 为空字符串，标题保留在 label 中，子目录独立读取。 |
+| 目标文件或锚点缺失 | 抛出 IOException，避免错误地把整页内容当作该章节。 |
+| 第一锚点之前的内容 | 没有文件级目录项覆盖时不纳入 content；严格从目录指定位置开始。 |
+| 区间跨越祖先容器 | 重建必要祖先并裁剪子节点；跨片段复制的祖先去除 id，其他属性保留。 |
 
-XML 安全解析不等于 HTML 安全清洗；当前转换器不负责过滤正文脚本或实施展示侧 CSP。资源路径归一化也不等于完整的存储隔离策略，本地处理器另做目标路径越界检查。
+文本级行内锚点也按节点位置切分，锚点前后的内容可能成为不同片段，必须保留它们各自的必要父结构。目录树不提供“结束锚点”，所以内容区间以同文件下一个目录目标为结束边界。
+
+### 技术选型与限制
+
+图片图注自动组合：完成样式、标题及资源处理后，若 img 紧邻的 p、div 或 span 以“图＋阿拉伯数字/全角数字”开头（例如“图6　《神仙赴会图》东壁后部”），将两者转换为 figure，图片为 img，图注为 figcaption。figcaption 内仅保留文本，不嵌套 p、span 或链接；保留图注容器自身属性，子元素的样式和链接功能不再保留。随后仍遵守 removeClasses 清理选项。
+
+识别只忽略空白和注释，不跨过正文、其他元素或章节边界；支持仅含图片的 p/div 容器后接图注。不重复包装已有 figure，但会将已有 figcaption 的内部内容也转为文本；不自动把章节标题、含块级正文或媒体的复杂相邻容器识别为图注。新建 figure 使用 margin: 0，避免引入浏览器默认外边距；复用单图容器时保留其原属性。
+
+~~~html
+<figure style="margin: 0">
+  <img src="处理器返回的图片地址">
+  <figcaption>图6　《神仙赴会图》东壁后部</figcaption>
+</figure>
+~~~
+
+| 技术 | 用途 |
+| --- | --- |
+| JDK 21 ZipFile / JAXP | 随机访问 EPUB 条目，安全读取 OPF/NCX。 |
+| Jsoup 1.18.3 | XHTML DOM、节点裁剪、标题转换、属性修改和片段序列化。 |
+| 策略接口 | EpubResourceHandler 隔离本地、OSS、Base64 差异。 |
+| Maven Shade 3.6.0 | 保留普通 JAR，并生成 all 附加构件。 |
+| JUnit 5.11.4 | 验证目录结构、内容归属、顺序和资源策略。 |
+
+原有能力与限制继续适用：
+
+- CSS 采用简化规则：外部声明按源码顺序收集，原始内联声明最后追加，不再将已收集的外部规则当成原始内联样式。保留简写/长写、重复声明及 !important，由浏览器解释声明覆盖；仍未实现完整选择器 specificity 或媒体条件，不收集 head 内 style。
+- 媒体支持普通 src/data 及 SVG image 的 href/xlink:href；不覆盖 poster、srcset、CSS url、SVG use。
+- 所有片段共用一次转换的资源缓存，同一归档资源只处理一次。
+- 章节 content 不增加额外包装，不新增 section.epub-chapter 包装；原正文容器保留。
+- 目录标题仅保存在 label 中，不生成或改名正文标题；源 XHTML 原有标题保留。
+- 不重写跨章节超链接，不执行安全清洗，也不保证复杂排版与原阅读器完全一致。
+- 完整内容树仍占用内存，但库不再额外构造整书字符串，媒体仍完整读取为 byte[]。
+- 资源可能在返回树之前已保存或上传；异常时不自动回滚外部资源。
 
 ## 3. 核心调用关系
 
-### 依赖关系
+### 文件或输入流转换
 
 ~~~text
-业务项目
-  → EpubConverter
-      → ConversionPipeline
-          ├── PackageReader / NavigationReader
-          ├── StyleProcessor
-          ├── HeadingProcessor
-          ├── MediaProcessor
-          │    → EpubResourceHandler.handle(EpubResource)
-          │        ├── LocalResourceHandler
-          │        └── 业务 OSS / Base64 策略
-          └── HtmlAssembler
-
-读取与处理组件按需使用 EpubArchive / EpubXml / EpubPaths
+EpubConverter.convert
+ → 输入流时先经 TemporaryEpub
+ → ConversionPipeline.convert
+     → NavigationReader.readToc
+     → TocContentReader.read
+         → StyleProcessor.inlineStyles
+         → ChapterRange.copy
+         → MediaProcessor.rewriteMedia
+             → EpubResourceHandler.handle
+         → TocItem.setContent
+ → 关闭 ZipFile 并返回 List<TocItem>
+ → 调用方独立处理结果
 ~~~
 
-三个处理器不直接相互调用；顺序由 processChapter 控制，数据通过同一个可变 Document 传递。这是固定步骤组合，不是动态注册的责任链框架。
-
-### 三条代表性路径
-
-**本地输出**
+### 同页父子章节
 
 ~~~text
-convert(epub, html, mediaDirectory)
-  → 创建 LocalResourceHandler
-  → convert(epub, html, handler)
-  → ConversionPipeline.convert
-  → MediaProcessor.rewriteMedia
-  → handler.handle → Files.write(资源路径) → 返回 URL → 回写 DOM
-  → HtmlAssembler.append / write → Files.writeString(HTML)
-  → 门面在结果中补回 mediaDirectory
+父章 target=a.xhtml
+子节 target=a.xhtml#part
+ → 同一文件读取一次
+ → 父 content 保存 [body 开始, part)
+ → 子 content 保存 [part, 下一锚点或文件结束)
+ → 返回父节点及 children，父子 content 独立保存
 ~~~
 
-资源路径保留归档层级，已有文件会被覆盖。URL 前缀与服务器磁盘路径是两个不同概念。
+### 不同文件与目录顺序
 
-**云端资源**
+当 spine 为 A、B，而目录为 B、A 时，返回根列表顺序为 B、A。目录引用 C、但 C 不在 spine 中时，仍读取 C。此变化是本次改造的核心：spine 不再驱动有目录书籍的读取顺序。
 
-~~~text
-convert(epub, html, ossHandler)
-  → ConversionPipeline
-  → MediaProcessor：检查路径缓存
-  → 未命中时读取字节 → ossHandler.handle → 业务上传 → 返回实际 URL
-  → 缓存 URL 并修改章节属性
-  → 合并所有章节 → 写本地 HTML → 返回结果
-~~~
+## 4. 设计意图与维护
 
-云存储只负责媒体，HTML 仍写到 outputHtml 本地路径。异常终止当前转换；重试、对象 key 命名和失败清理由宿主管理。
+- **解析与消费分离**：库返回内容树，宿主负责消费。相比固定输出 HTML，适合章节入库、目录展示和 API 返回，代价是宿主需要自行实现最终渲染。
+- **内容归属明确**：父节点不保存子正文，先序输出不会重复；代价是必须处理同文件锚点区间。
+- **完整 DOM 先处理样式**：保留原文件结构供 CSS 匹配，再裁剪各章，减少因拆分改变选择器上下文的影响。
+- **存储仍使用策略模式**：本次更换内容组织方式，不要求宿主更改资源处理器。
+- **精简公开契约**：两个入口统一返回 List<TocItem>，不保留隐含写文件行为的兼容重载；旧调用方必须迁移。
+- **单一职责与策略模式**：TocContentReader 仅填充正文，输出逻辑不属于库；资源策略继续支持本地或远程存储，无需引入 Spring 依赖。同步调用便于明确完成与失败边界，相比异步回调更简单，但耗时上传会阻塞解析。
 
-**目录转标题**
-
-~~~text
-NavigationReader.readToc
-  → readNcx / readNav
-  → ncxItems / navItems 递归：父项先入列表，子项 level + 1
-  → TocItem(target, level, label)
-  → ConversionPipeline.indexTargets
-  → HeadingProcessor.injectTocHeadings：筛本章、找锚点、插标题
-  → MediaProcessor → HtmlAssembler.append / write → 最终 HTML
-~~~
-
-目录顺序与正文顺序承担不同职责：目录用于定位和确定标题层级，正文仍按 spine 合并。
-
-## 4. 设计原则、取舍与演进
-
-### 架构决策
-
-本次拆分明确采用单一职责、组合优于继承和最小公开面原则。历史技术选型的理由属于根据源码的合理推断；原始评审记录、性能对比数据待补充。
-
-| 决策 | 理由与取舍 |
+| 修改目标 | 优先查看 |
 | --- | --- |
-| 门面与算法分离 | 保持调用 API 稳定，新增内部组件不增加宿主理解成本。 |
-| 包内组件而非新增多个模块 | 当前规模适合职责拆分；package-private 避免内部方法成为公共兼容性负担。 |
-| 固定步骤组合而非多层基类 | 顺序可直接阅读；目前没有动态扩展步骤的需求，不为每一步增加接口。 |
-| 存储通过接口 | 对外只依赖资源到 URL 的契约，避免绑定厂商 SDK 和凭证模型。 |
-| 同步串行而非异步上传 | 顺序、资源关闭和失败传播较清晰；代价是网络等待直接影响转换耗时。 |
-| 当前文件输出而非事务 | 文件和云端对象没有统一事务；代价是宿主需要补偿与幂等策略。 |
-| 基础 DOM 处理而非浏览器渲染 | 部署依赖较少、便于节点修改；代价是无法保证复杂版式一致。 |
+| 目录树结构 | NavigationReader / TocItem |
+| 内容归属、读取策略 | TocContentReader |
+| 锚点边界、祖先裁剪 | ChapterRange |
+| 最终展示、合并、持久化 | 宿主项目，不属于解析库 |
+| 新增存储方案 | 宿主实现 EpubResourceHandler |
+| 样式或媒体兼容性 | 对应 Processor |
 
-MVC 适合宿主 Web 服务，不适合直接套用到这个转换库。项目有资源策略端口，但尚不是完整六边形架构：输入 EPUB 和输出 HTML 仍直接使用本地文件 API。若未来需支持流输入、存储端口或任务调度，可按实际需求继续拆分。
+后续可增加读取选项以配置无目录回退、未覆盖前言、重复目标和失效链接的处理策略；也可按实际书籍数据完善表格、列表等复杂容器的片段裁剪测试。
 
-### 维护定位
+**待补充**：不同来源 EPUB 的锚点质量、实际并发与内存预算、云存储幂等和清理策略。历史技术选型的性能评估依据仍需项目维护者补充。
 
-| 需求 | 优先修改位置 |
-| --- | --- |
-| 新增 OSS/其他存储 | 在业务项目实现 EpubResourceHandler。 |
-| 修改 OPF/阅读顺序兼容性 | PackageReader。 |
-| 修改 NCX/EPUB 3 导航兼容性 | NavigationReader。 |
-| 调整标题生成 | HeadingProcessor。 |
-| 改进 CSS 解析/层叠 | StyleProcessor。 |
-| 支持新的媒体属性 | MediaProcessor。 |
-| 修改输出容器与序列化 | HtmlAssembler。 |
-| 新增步骤或改变执行顺序 | ConversionPipeline。 |
-
-避免重新把算法放回门面；同时更新中文注释、行为限制和相应回归测试。
-
-### 后续方向与待补充项
-
-- 引入有明确关闭责任的流式资源接口，减少大媒体内存占用。
-- 根据需求引入转换选项、警告列表、进度通知和取消机制。
-- 补齐 EPUB 3 多 nav、复杂 CSS、异常 XML、路径和大媒体测试。
-- 如需更高排版还原度，评估 CSS 解析器或受控保留样式表的方案。
-- **待补充**：实际 EPUB 大小、并发量、超时预算及性能数据。
-- **待补充**：OSS 命名、访问权限、签名 URL 生命周期、重试与清理策略。
-- **待补充**：展示端安全清洗、跨域和字体需求。
-
-## 5. 测试与注释维护
+## 5. 回归验证
 
 ~~~powershell
 mvn test
 mvn package
 ~~~
 
-目前测试源码包含 5 个用例：
+当前 37 个测试覆盖：
 
-| 测试类 | 覆盖内容 |
+| 测试类 | 核心覆盖 |
 | --- | --- |
-| EpubConverterTest | 真实 demo.epub 的本地转换、Base64 回写。 |
-| ConversionPipelineTest | 小型多章节 EPUB 的阅读顺序、标题层级、样式、跨章节资源去重与跨调用缓存隔离；处理器抛错传播；空白 URL 拒绝。 |
+| EpubConverterTest | 现有真实 EPUB 的本地与 Base64 转换。 |
+| ConversionPipelineTest | 目录目标读取、输入流与路径返回树一致、无 HTML 文件输出、失败传播及临时文件清理。 |
+| HeadingProcessorTest | 标题 h1～h6、锚点、原有标题和属性保留。 |
+| NavigationReaderTest | NCX / EPUB 3 父子树及分组节点。 |
+| SvgResourceTest | SVG 封面 href/xlink:href 和资源去重。 |
+| FigureProcessorTest | 紧邻图注、单图段落、图注纯文本与属性保留、文本转义、非图注排除及重复调用。 |
+| StyleProcessorTest | demo.epub 的全局重置与段落下边距顺序、原始内联样式、简写/长写及重复声明保留；拼接时不额外添加双分号，保留属性值内分号。 |
+| EncodedResourceTest | 带空格章节路径、编码中文图片名、字面百分号与加号，以及项目 demo.epub 图片回写。 |
+| TocContentReaderTest | content 实际归属、目录覆盖 spine、父子不重复、同目标只读取一次、失效锚点失败。 |
 
-测试使用 JUnit 临时目录保存输出，报告位于 target/surefire-reports。已有用例不代表复杂 CSS 或所有 EPUB 3 导航结构均已验证。
+测试报告位于 target/surefire-reports。现有真实样例测试包含 E: 盘上的本机输入路径，换环境时需提供对应 EPUB；本地媒体写入测试临时目录，测试不写出 HTML；其他用例使用构造归档和临时目录。
 
-阅读代码时先看类职责，再看方法 Javadoc，最后按内部注释跟踪分支。维护注释时应核对实际方法声明、参数、返回结果、原地修改和异常；调整逻辑后，不能只修改注释而遗漏技术方案或测试。
+### 标题与正文分离
+
+转换不再将 TocItem.label 拼接到 content。content 只保存目标区间的正文，原 XHTML 中已有的标题不删除、不按目录层级改名。无链接分组仅保留 label 和 children，content 为空。调用方如需展示目录标题，应单独读取 label，避免假定 content 开头一定存在 h1～h6。

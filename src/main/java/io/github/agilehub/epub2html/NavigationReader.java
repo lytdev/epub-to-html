@@ -13,129 +13,131 @@ import static io.github.agilehub.epub2html.EpubArchive.read;
 import static io.github.agilehub.epub2html.EpubArchive.requiredEntry;
 import static io.github.agilehub.epub2html.EpubPaths.resolve;
 import static io.github.agilehub.epub2html.EpubXml.xml;
-import static io.github.agilehub.epub2html.EpubXml.textOf;
-import static io.github.agilehub.epub2html.EpubXml.attributeOf;
 
 /**
- * 导航读取器，把 NCX 或 EPUB 3 导航树转换为带层级的 {@link TocItem} 列表。
+ * 将 NCX 或 EPUB 3 导航解析为目录树。
  *
- * <p>由 {@link ConversionPipeline} 在章节循环前调用；结果交给 {@link HeadingProcessor} 使用。
- * “扁平列表”不是丢弃层级：每条记录仍有 level，所以后续能决定生成 h1、h2 等标题。
+ * <p>返回列表只包含根节点，下一层存入各节点 children；兄弟顺序与原导航一致。
+ * 无链接的分组节点也保留，target 为 null，避免子目录被提升或借用子节点链接。
  */
 final class NavigationReader {
-  /** 仅提供静态方法，禁止创建没有用途的工具类实例。 */
+  /** 工具类不需要实例。 */
   private NavigationReader() {}
 
   /**
-   * 选择可用的导航文件并读取层级目录。
+   * 优先读取存在的 NCX，否则读取 EPUB 3 nav。
    *
-   * <p>先尝试存在的 NCX，再尝试 nav；两者都不存在时返回空列表。已选 NCX 解析报错时直接传播异常，不会再回退 nav。
-   *
-   * @param zip 当前 EPUB 归档
-   * @param pkg 包读取器给出的导航文件位置
-   * @return 按解析遍历顺序排列的目录项，没有可用导航时为空列表
-   * @throws IOException 导航读取或 NCX XML 解析失败时抛出
+   * @param zip 已打开的 EPUB
+   * @param pkg 包描述，包含导航文件位置
+   * @return 根目录节点列表，无导航时为空
+   * @throws IOException 导航读取或 XML 解析失败；选中 NCX 后不因解析错误回退
    */
-  static List<TocItem> readToc(ZipFile zip, PackageData pkg)
-      throws IOException {
-    // 使用存在的 NCX；选中后若解析失败，不会静默切换到另一个目录来源。
+  static List<TocItem> readToc(ZipFile zip, PackageData pkg) throws IOException {
     if (pkg.ncx() != null && zip.getEntry(pkg.ncx()) != null)
-      /**
-       * 从 NCX 的首个 navMap 开始展开目录树。
-       *
-       * <p>交给 ncxItems 做深度优先遍历，父目录先进入结果列表，子目录紧随其后。
-       *
-       * @param content NCX 文件的完整 XML 文本
-       * @param ncxPath NCX 归档路径，用于解析 content 的相对 src
-       * @return 保留导航层级的目录项列表；没有 navMap 时为空
-       * @throws IOException NCX XML 无法解析时抛出
-       */
       return readNcx(read(zip, requiredEntry(zip, pkg.ncx())), pkg.ncx());
-    // 没有可用 NCX 才尝试 EPUB 3 的导航 XHTML。
     if (pkg.nav() != null && zip.getEntry(pkg.nav()) != null)
-      /**
-       * 从 EPUB 3 导航 XHTML 中读取有序列表。
-       *
-       * <p>当前选择器取首个匹配的 nav 元素；因包含通用 nav 分支，不保证在多个 nav 中优先选择 toc。随后从首个 ol 开始递归解析。
-       *
-       * @param content 导航 XHTML 的完整文本
-       * @param navPath 导航文件归档路径，作为相对链接的基准
-       * @return 导航目录项；没有 nav 或 ol 时为空列表
-       * @throws org.jsoup.select.Selector.SelectorParseException 当前 Jsoup 版本无法解析所用选择器时抛出
-       */
       return readNav(read(zip, requiredEntry(zip, pkg.nav())), pkg.nav());
     return List.of();
   }
 
-
+  /**
+   * 从第一个 navMap 读取 NCX 目录树。
+   *
+   * @param content NCX XML 文本
+   * @param ncxPath 归档路径，用于解析相对链接
+   * @return 仅含根节点的列表；子目录位于 children
+   * @throws IOException XML 解析失败时抛出
+   */
   static List<TocItem> readNcx(String content, String ncxPath) throws IOException {
     org.w3c.dom.Document document = xml(content);
-    ArrayList<TocItem> result = new ArrayList<>();
-    // navMap 是 NCX 的目录根节点，从一级目录开始遍历。
+    List<TocItem> result = new ArrayList<>();
     NodeList maps = document.getElementsByTagNameNS("*", "navMap");
     if (maps.getLength() > 0) ncxItems(maps.item(0), ncxPath, 1, result);
     return result;
   }
 
-
   /**
-   * 递归读取 navPoint，并将当前节点和子节点加入结果列表。
+   * 读取当前层直接 navPoint 子元素，每个节点递归填充自己的 children。
    *
-   * <p>递归是方法调用自身：每次向下进入一层目录，level 加一；没有子节点时自然结束。没有 src 的节点不加入结果，但仍继续遍历其子目录。
-   *
-   * @param parent 本层查询起点，可为 navMap 或上层 navPoint
-   * @param base NCX 文件路径，用来解析相对链接
+   * @param parent navMap 或父 navPoint
+   * @param base NCX 归档路径
    * @param level 当前层级，从 1 开始
-   * @param out 用于累计目录项的可变列表，本方法直接追加元素
+   * @param out 当前层的结果列表，不加入孙节点
    */
   static void ncxItems(org.w3c.dom.Node parent, String base, int level, List<TocItem> out) {
-    NodeList children = parent.getChildNodes();
-    for (int i = 0; i < children.getLength(); i++) {
-      org.w3c.dom.Node node = children.item(i);
-      // DOM 子节点还可能是空白文本；只处理元素类型且名称为 navPoint 的节点。
-      if (!(node instanceof org.w3c.dom.Element e) || !"navPoint".equals(e.getLocalName()))
-        continue;
-      // 标签文字用于生成 h 标签，src 用于定位标题应插入哪个章节、哪个锚点。
-      String label = textOf(e, "text");
-      String src = attributeOf(e, "content", "src");
-      if (src != null && !src.isBlank()) out.add(new TocItem(resolve(base, src), level, label));
-      // 先加入父目录，再递归读子目录；level + 1 保留嵌套深度。
-      ncxItems(e, base, level + 1, out);
+    NodeList nodes = parent.getChildNodes();
+    for (int i = 0; i < nodes.getLength(); i++) {
+      if (!(nodes.item(i) instanceof org.w3c.dom.Element node)
+          || !"navPoint".equals(node.getLocalName())) continue;
+      // 只取本节点自己的标签与链接，不能查找所有后代而误取子目录的信息。
+      org.w3c.dom.Element navLabel = directChild(node, "navLabel");
+      org.w3c.dom.Element text = navLabel == null ? null : directChild(navLabel, "text");
+      org.w3c.dom.Element content = directChild(node, "content");
+      String src = content == null ? "" : content.getAttribute("src");
+      TocItem item = new TocItem(
+          src.isBlank() ? null : resolve(base, src), level,
+          text == null ? "" : text.getTextContent().trim());
+      // 关键：递归的输出列表属于当前节点，不再传入上一层的 out。
+      ncxItems(node, base, level + 1, item.getChildren());
+      out.add(item);
     }
   }
 
+  /**
+   * 查找直接子元素，不穿透下层目录。
+   *
+   * @param parent 父元素
+   * @param name 不含命名空间前缀的元素名
+   * @return 首个匹配元素，不存在时为 null
+   */
+  private static org.w3c.dom.Element directChild(org.w3c.dom.Element parent, String name) {
+    NodeList children = parent.getChildNodes();
+    for (int i = 0; i < children.getLength(); i++) {
+      if (children.item(i) instanceof org.w3c.dom.Element element
+          && name.equals(element.getLocalName())) return element;
+    }
+    return null;
+  }
 
+  /**
+   * 读取 EPUB 3 导航的 ol/li 目录树，优先选 epub:type= toc 的导航。
+   *
+   * @param content XHTML 文本
+   * @param navPath 导航归档路径
+   * @return 根目录列表
+   */
   static List<TocItem> readNav(String content, String navPath) {
     Document doc = Jsoup.parse(content, navPath, Parser.xmlParser());
-    // 选择器含通用 nav 回退，因此取得的是文档顺序中首个匹配项。
-    Element nav = doc.selectFirst("nav[*|type=\"toc\"], nav[epub:type=\"toc\"], nav");
-    if (nav == null) return List.of();
-    ArrayList<TocItem> result = new ArrayList<>();
-    navItems(nav.selectFirst("ol"), navPath, 1, result);
+    Element nav = doc.select("nav").stream()
+        .filter(e -> List.of(e.attr("epub:type").trim().split("\\s+")).contains("toc"))
+        .findFirst().orElse(doc.selectFirst("nav"));
+    List<TocItem> result = new ArrayList<>();
+    if (nav != null) navItems(nav.selectFirst("ol"), navPath, 1, result);
     return result;
   }
 
-
   /**
-   * 递归读取 ol 下的直接 li 子节点，将链接映射为目录项。
+   * 将当前列表的直接 li 转为节点，无链接的 span 分组也保留。
    *
-   * <p>只查直接子节点，避免一次把所有后代提前读入而丢失层级；无链接的 li 仍可继续读取其子 ol。
-   *
-   * @param list 当前有序列表节点；为 null 时结束递归
-   * @param base 导航文件归档路径
-   * @param level 当前目录层级，从 1 开始
-   * @param out 累计结果的可变列表
+   * @param list 当前 ol，null 时表示无子目录
+   * @param base 导航归档路径
+   * @param level 当前层级
+   * @param out 当前层结果列表
    */
   static void navItems(Element list, String base, int level, List<TocItem> out) {
-    // 没有下层 ol 表示已走到目录叶子，直接返回上一层调用。
     if (list == null) return;
-    // > 只选直接子节点，子列表由下面的递归单独处理。
-    for (Element li : list.select("> li")) {
-      Element link = li.selectFirst("> a[href]");
-      if (link != null) out.add(new TocItem(resolve(base, link.attr("href")), level, link.text()));
-      // 即使当前 li 没有 a 链接，也继续查找它下面的目录项。
-      navItems(li.selectFirst("> ol"), base, level + 1, out);
+    for (Element li : list.children()) {
+      if (!li.normalName().equals("li")) continue;
+      Element label = li.children().stream()
+          .filter(e -> e.normalName().equals("a") || e.normalName().equals("span"))
+          .findFirst().orElse(null);
+      String href = label != null && label.normalName().equals("a") ? label.attr("href") : "";
+      TocItem item = new TocItem(href.isBlank() ? null : resolve(base, href), level,
+          label == null ? li.ownText() : label.text());
+      for (Element child : li.children()) {
+        if (child.normalName().equals("ol")) navItems(child, base, level + 1, item.getChildren());
+      }
+      out.add(item);
     }
   }
-
 }

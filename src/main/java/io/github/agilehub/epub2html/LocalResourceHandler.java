@@ -8,7 +8,7 @@ import java.util.Objects;
 /**
  * 将 EPUB 资源保存到本地目录的默认 {@link EpubResourceHandler} 实现。
  *
- * <p>由 {@link EpubConverter#convert(Path, Path, Path)} 创建，也可独立传给自定义转换流程。
+ * <p>由调用方创建并传入 {@link EpubConverter#convert(Path, EpubResourceHandler)}。
  * 输出路径保留 EPUB 内部目录层级，以避免同名资源相互覆盖；同时会拒绝越出目标目录的路径。</p>
  */
 public final class LocalResourceHandler implements EpubResourceHandler {

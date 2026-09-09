@@ -6,7 +6,7 @@
     <artifactId>epub2html4j</artifactId>
     <version>1.0.0</version>
     <name>epub2html4j</name>
-    <description>EPUB to a single styled HTML document converter</description>
+    <description>EPUB parser returning a chapter tree with styled HTML fragments</description>
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

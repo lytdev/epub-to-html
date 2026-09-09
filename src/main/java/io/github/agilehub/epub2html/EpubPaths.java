@@ -28,25 +28,19 @@ final class EpubPaths {
     // EPUB/URI 使用斜杠作为分隔符，先兼容输入中的 Windows 反斜杠。
     String clean = reference.replace('\\', '/');
     try {
-      /**
-       * 整理路径中的点段和分隔符，同时保留 # 后的片段。
-       *
-       * <p>使用宿主 Path 规则处理 . 和 ..，随后转回 ZIP 常用的斜杠。结果不保证没有前导 ..，不能据此认定路径安全。
-       *
-       * @param path 待整理的文件路径，可含锚点
-       * @return 整理后的路径与原片段的组合
-       * @throws java.nio.file.InvalidPathException 路径无法由宿主文件系统解析时抛出
-       */
-      // URI.resolve 处理相对目录，getPath 解码百分号编码；片段需单独拼回。
+      // base 是已解码的 ZIP 条目名，不是 URI 文本；组件构造器会正确转义空格和百分号。
+      // reference 则是 XHTML 中的 URI 引用，保留其编码，避免把 %xx 再编码为 %25xx。
+      URI baseUri = new URI(null, null, base.replace('\\', '/'), null);
+      URI referenceUri = URI.create(clean);
+      // 解析相对目录后只解码一次路径；不能用 URLDecoder，否则文件名中的 + 会变成空格。
       return normalize(
-          URI.create(base).resolve(clean).getPath()
-              + (URI.create(clean).getFragment() == null
+          baseUri.resolve(referenceUri).getPath()
+              + (referenceUri.getFragment() == null
                   ? ""
-                  : "#" + URI.create(clean).getFragment()));
+                  : "#" + referenceUri.getFragment()));
     } catch (Exception e) {
       // 无法按 URI 解析时，使用基准文件的所在目录进行字符串拼接。
       int slash = base.lastIndexOf('/');
-      // URI.resolve 处理相对目录，getPath 解码百分号编码；片段需单独拼回。
       return normalize((slash < 0 ? "" : base.substring(0, slash + 1)) + clean);
     }
   }
