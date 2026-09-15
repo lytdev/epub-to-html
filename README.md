@@ -46,6 +46,8 @@ List<TocItem> convert(Path epub, EpubResourceHandler resourceHandler) throws IOE
 List<TocItem> convert(InputStream epubInput, EpubResourceHandler resourceHandler) throws IOException;
 List<TocItem> convert(Path epub, EpubResourceHandler resourceHandler, boolean removeClasses) throws IOException;
 List<TocItem> convert(InputStream epubInput, EpubResourceHandler resourceHandler, boolean removeClasses) throws IOException;
+List<TocItem> convert(Path epub, EpubResourceHandler resourceHandler, boolean removeClasses, FileParseCallback<TocItem> callback) throws IOException;
+List<TocItem> convert(InputStream epubInput, EpubResourceHandler resourceHandler, boolean removeClasses, FileParseCallback<TocItem> callback) throws IOException;
 ~~~
 
 removeClasses 默认 false，保留正文的 class 和 id。传入 true 时，在章节定位、样式内联、资源处理完成后，同时删除所有正文元素的 class 和 id，再保存 content；保留 style、src 等其他属性，不修改 TocItem.target 和 children。
@@ -55,6 +57,8 @@ List<TocItem> chapters = new EpubConverter().convert(input, resourceHandler, tru
 ~~~
 
 注意：尽管选项名为 removeClasses，启用后也会删除 id。正文中的锚点链接、SVG 内部引用、宿主按 class/id 绑定的样式或交互可能因此失效；库不会重写这些引用。选项仅作用于本次调用，不改变转换器后续调用的默认行为。
+
+带 `FileParseCallback<TocItem>` 的重载用于在转换过程中接收进度：每完成一个带 target 的顶层内容项触发一次 `onLineParsed(count, total, record)`（`record` 为 `CallBackRecord<TocItem>`，含 `item / target / label / content`），异常时触发 `onError(ex, line)`（解压与目录解析阶段 `line` 为 0，内容阶段为当前项序号，之后原异常仍向上抛出），成功后触发 `onComplete(total, message)`。传入 `null` 表示不接收通知，行为与不带回调的重载一致。
 
 这是不兼容的 API 调整：删除带 outputHtml / mediaDirectory 参数的旧重载，以及 ConversionResult；输入流重载不再返回 String。调用方需改为接收 List<TocItem>，自行决定展示、合并、接口响应或持久化。库不生成完整 HTML，也不写入 HTML 文件。
 

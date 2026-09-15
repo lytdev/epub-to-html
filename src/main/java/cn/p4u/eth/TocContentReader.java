@@ -44,11 +44,62 @@ final class TocContentReader {
   void read(
       ZipFile zip, List<TocItem> itemList, EpubResourceHandler handler, Map<String, String> urls)
       throws IOException {
+    read(zip, itemList, handler, urls, null);
+  }
+
+  /**
+   * 填充目录项自己的内容，并逐「顶层内容项」触发进度回调。
+   *
+   * <p>每完成一个带 target 的顶层项调用一次 {@link FileParseCallback#onLineParsed}；
+   * 内容处理异常时先调用 {@link FileParseCallback#onError}（序号为当前项）再向上抛出。
+   * 返回顶层内容项总数，供调用方在 {@link FileParseCallback#onComplete} 中复用。
+   *
+   * @param zip EPUB 归档
+   * @param itemList 目录树，content 被原地更新
+   * @param handler 资源处理策略
+   * @param urls 跨节点共享的资源缓存
+   * @param callback 进度回调，可为 null
+   * @return 带 target 的顶层内容项总数
+   * @throws IOException 目标文件、锚点不存在或资源处理失败时抛出
+   */
+  int read(
+      ZipFile zip,
+      List<TocItem> itemList,
+      EpubResourceHandler handler,
+      Map<String, String> urls,
+      FileParseCallback<TocItem> callback)
+      throws IOException {
     Map<String, List<TocItem>> files = ChapterReadPlan.collect(itemList);
     ResourceResolver resources = new ResourceResolver(zip, handler, urls);
+    // 只有带 target 的顶层项才是真正会被解析的内容项；无链接分组节点不参与计数与通知。
+    int total =
+        (int)
+            itemList.stream()
+                .filter(i -> i.getTarget() != null && !i.getTarget().isBlank())
+                .count();
+    int count = 0;
     for (var file : files.entrySet()) {
-      fillFile(zip, file.getKey(), file.getValue(), resources);
+      try {
+        fillFile(zip, file.getKey(), file.getValue(), resources);
+      } catch (IOException | RuntimeException ex) {
+        // 当前项序号（尽力）：尚未完成的下一个顶层项。
+        if (callback != null) callback.onError(ex, count + 1);
+        throw ex;
+      }
+      for (TocItem item : file.getValue()) {
+        // 依据对象引用判断顶层项：同一文件内的子项不触发通知。
+        if (itemList.contains(item)) {
+          count++;
+          if (callback != null) {
+            callback.onLineParsed(
+                count,
+                total,
+                new CallBackRecord<>(item, item.getTarget(), item.getLabel(), item.getContent()));
+          }
+        }
+      }
     }
+    return total;
   }
 
   /**

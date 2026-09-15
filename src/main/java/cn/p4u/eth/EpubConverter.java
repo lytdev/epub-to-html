@@ -49,10 +49,34 @@ public final class EpubConverter {
    */
   public List<TocItem> convert(
       Path epub, EpubResourceHandler resourceHandler, boolean removeClasses) throws IOException {
+    return convert(epub, resourceHandler, removeClasses, null);
+  }
+
+  /**
+   * 读取 EPUB 文件，选择是否清除 class 和 id，并在转换过程中接收进度通知。
+   *
+   * <p>回调逐「顶层内容项」触发：每完成一项调用 {@link FileParseCallback#onLineParsed}，
+   * 异常时调用 {@link FileParseCallback#onError}，全部完成后调用 {@link FileParseCallback#onComplete}。
+   * 传入 null 回调表示不接收通知，行为与 {@link #convert(Path, EpubResourceHandler, boolean)} 一致。
+   *
+   * @param epub 可读取的 EPUB 文件路径
+   * @param resourceHandler 同步资源策略，须返回非空白 URL
+   * @param removeClasses true 时同时删除正文所有元素的 class 和 id
+   * @param callback 进度回调，可为 null；通知在转换线程内同步触发
+   * @return 已填充 content 的章节树，子章节独立保存在 children 中
+   * @throws NullPointerException epub 或 resourceHandler 为 null 时抛出
+   * @throws IOException EPUB 读取、解析或资源处理失败时抛出；回调 {@code onError} 之后仍向上传播
+   */
+  public List<TocItem> convert(
+      Path epub,
+      EpubResourceHandler resourceHandler,
+      boolean removeClasses,
+      FileParseCallback<TocItem> callback)
+      throws IOException {
     Objects.requireNonNull(epub, "epub");
     Objects.requireNonNull(resourceHandler, "resourceHandler");
     // 在返回前读取全部内容并关闭 ZIP，返回值不依赖打开的归档。
-    return new ConversionPipeline().convert(epub, resourceHandler, removeClasses);
+    return new ConversionPipeline().convert(epub, resourceHandler, removeClasses, callback);
   }
 
   /**
@@ -89,11 +113,34 @@ public final class EpubConverter {
   public List<TocItem> convert(
       InputStream epubInput, EpubResourceHandler resourceHandler, boolean removeClasses)
       throws IOException {
+    return convert(epubInput, resourceHandler, removeClasses, null);
+  }
+
+  /**
+   * 从输入流读取章节树，选择是否清除 class 和 id，并接收进度通知。
+   *
+   * <p>输入流由调用方关闭，内部临时归档在结束时清理。回调语义与
+   * {@link #convert(Path, EpubResourceHandler, boolean, FileParseCallback)} 一致，可为 null。
+   *
+   * @param epubInput EPUB 输入流，从当前位置读取至结束
+   * @param resourceHandler 同步资源策略，须返回非空白 URL
+   * @param removeClasses true 时同时删除正文所有元素的 class 和 id
+   * @param callback 进度回调，可为 null
+   * @return 已填充内容的章节树，不包含完整 HTML 文档外壳
+   * @throws NullPointerException epubInput 或 resourceHandler 为 null 时抛出
+   * @throws IOException 流读取、临时文件创建或清理、EPUB 解析或资源处理失败时抛出
+   */
+  public List<TocItem> convert(
+      InputStream epubInput,
+      EpubResourceHandler resourceHandler,
+      boolean removeClasses,
+      FileParseCallback<TocItem> callback)
+      throws IOException {
     Objects.requireNonNull(epubInput, "epubInput");
     Objects.requireNonNull(resourceHandler, "resourceHandler");
     // 只管理内部临时归档；调用者仍拥有输入流。
     try (TemporaryEpub epub = TemporaryEpub.copyOf(epubInput)) {
-      return convert(epub.path(), resourceHandler, removeClasses);
+      return convert(epub.path(), resourceHandler, removeClasses, callback);
     }
   }
 }
