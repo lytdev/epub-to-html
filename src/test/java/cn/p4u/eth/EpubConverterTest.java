@@ -3,7 +3,6 @@ package cn.p4u.eth;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
 import static org.junit.jupiter.api.Assertions.*;
@@ -14,25 +13,21 @@ class EpubConverterTest {
 
   @Test
   void convertsProvidedDemoEpub() throws Exception {
-    String dir = "E:\\_tmp\\epub\\";
-    Path epub = Path.of(dir + "demo2.epub");
-    assertTrue(java.nio.file.Files.exists(epub), "demo.epub must be available at project root");
+    Path epub = EpubFixture.create(temporaryDirectory);
     var result =
-        new EpubConverter().convert(epub, new LocalResourceHandler(temporaryDirectory, "media"));
+        new EpubConverter().convert(epub, new LocalResourceHandler(temporaryDirectory.resolve("media"), "media"));
     String html = TocTestSupport.content(result);
     assertFalse(result.getFirst().getLabel().isBlank());
     assertTrue(html.contains("style="));
     assertFalse(result.isEmpty());
-    try (var files = java.nio.file.Files.walk(temporaryDirectory)) {
+    try (var files = java.nio.file.Files.walk(temporaryDirectory.resolve("media"))) {
       assertTrue(files.anyMatch(java.nio.file.Files::isRegularFile));
     }
   }
 
   @Test
   void delegatesResourcesAndUsesHandlerUrl() throws Exception {
-    String dir = "E:\\_tmp\\epub\\";
-    Path epub = Path.of(dir + "demo1.epub");
-    Path htmlPath = Path.of(dir + "demo1.html");
+    Path epub = EpubFixture.create(temporaryDirectory);
     var result =
         new EpubConverter()
             .convert(
@@ -46,6 +41,9 @@ class EpubConverterTest {
                 true);
 
     String html = TocTestSupport.content(result);
-    Files.writeString(htmlPath, html);
+    var document = org.jsoup.Jsoup.parse(html);
+    assertEquals("data:image/png;base64,AQID", document.selectFirst("img").attr("src"));
+    assertTrue(document.select("[class], [id]").isEmpty());
+    assertEquals("图1 示例图注", document.selectFirst("figcaption").text());
   }
 }

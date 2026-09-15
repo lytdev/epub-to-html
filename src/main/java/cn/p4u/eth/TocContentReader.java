@@ -3,7 +3,6 @@ package cn.p4u.eth;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.zip.ZipFile;
@@ -12,12 +11,12 @@ import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.nodes.Node;
 import org.jsoup.parser.Parser;
-import static cn.p4u.eth.EpubPaths.*;
+import static cn.p4u.eth.EpubPaths.targetFragment;
 
-/** 遍历目录树并填充各节点 content，读取阶段不向 HTML 组装器追加内容。 同一文件只解析一次，按锚点物理位置划分正文，最终输出顺序由目录树决定。 */
+/** 协调读取计划、完整 DOM 样式处理、边界裁剪和片段管道，将结果写回原目录节点。 */
 final class TocContentReader {
-  /** 本次读取是否清除正文标识属性，不跨请求共享可变配置。 */
-  private final boolean removeClasses;
+  /** 不可变的步骤配置；每次 read 的资源缓存通过独立会话传入。 */
+  private final FragmentPipeline fragments;
 
   /** 默认保留 class 和 id，以兼容原有章节读取行为。 */
   TocContentReader() {
@@ -30,7 +29,7 @@ final class TocContentReader {
    * @param removeClasses 是否在片段处理完毕后同时删除 class 和 id
    */
   TocContentReader(boolean removeClasses) {
-    this.removeClasses = removeClasses;
+    this.fragments = new FragmentPipeline(removeClasses);
   }
 
   /**
@@ -45,25 +44,10 @@ final class TocContentReader {
   void read(
       ZipFile zip, List<TocItem> itemList, EpubResourceHandler handler, Map<String, String> urls)
       throws IOException {
-    Map<String, List<TocItem>> files = new LinkedHashMap<>();
-    collect(itemList, files);
+    Map<String, List<TocItem>> files = ChapterReadPlan.collect(itemList);
+    ResourceResolver resources = new ResourceResolver(zip, handler, urls);
     for (var file : files.entrySet()) {
-      fillFile(zip, file.getKey(), file.getValue(), handler, urls);
-    }
-  }
-
-  /**
-   * @param itemList 当前层目录
-   * @param files 按目标文件分组的读取计划
-   */
-  private void collect(List<TocItem> itemList, Map<String, List<TocItem>> files) {
-    for (TocItem item : itemList) {
-      item.setContent("");
-      // 无链接分组保持空 content；标题只存于 label，子节点仍独立读取。
-      if (item.getTarget() != null && !item.getTarget().isBlank()) {
-        files.computeIfAbsent(targetFile(item.getTarget()), ignored -> new ArrayList<>()).add(item);
-      }
-      collect(item.getChildren(), files);
+      fillFile(zip, file.getKey(), file.getValue(), resources);
     }
   }
 
@@ -73,16 +57,14 @@ final class TocContentReader {
    * @param zip 归档
    * @param path 文件路径
    * @param itemList 该文件的目录项（目录先序顺序）
-   * @param handler 资源策略
-   * @param urls 资源缓存
+   * @param resources 本次转换共享的资源会话
    * @throws IOException 文件或锚点无效、读取或资源处理失败时抛出
    */
   private void fillFile(
       ZipFile zip,
       String path,
       List<TocItem> itemList,
-      EpubResourceHandler handler,
-      Map<String, String> urls)
+      ResourceResolver resources)
       throws IOException {
     Document source =
         Jsoup.parse(
@@ -110,27 +92,8 @@ final class TocContentReader {
         Node copy = range.copy(child, boundary.position(), end);
         if (copy != null) part.body().appendChild(copy);
       }
-      MediaProcessor.rewriteMedia(zip, part, path, handler, urls);
-      FigureProcessor.wrapCaptions(part);
-      saveContent(part, boundary.item());
+      boundary.item().setContent(fragments.process(part, path, resources));
     }
-  }
-
-  /**
-   * 在定位、样式及资源处理完成后清理属性，并保存本级 HTML 片段。
-   *
-   * @param part 已处理的章节文档
-   * @param item 接收片段的目录节点；target 和 children 不变
-   */
-  private void saveContent(Document part, TocItem item) {
-    // 不能提前删除 id/class：目录锚点定位和 CSS 选择器仍需使用这些属性。
-    if (removeClasses) {
-      for (Element element : part.body().getAllElements()) {
-        element.removeAttr("class");
-        element.removeAttr("id");
-      }
-    }
-    item.setContent(part.body().html());
   }
 
   /**

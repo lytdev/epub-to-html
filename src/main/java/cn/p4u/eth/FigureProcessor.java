@@ -22,7 +22,7 @@ final class FigureProcessor {
   /**
    * 原地组合图片与图注，保留图片属性及图注容器属性，图注内部仅保留文本。
    *
-   * @param document 已完成标题、样式和媒体替换的章节文档
+   * @param document 已完成样式和媒体替换的章节片段，原正文标题保留
    */
   static void wrapCaptions(Document document) {
     // 快照避免移动节点影响遍历；已有 figure 不重复包装。

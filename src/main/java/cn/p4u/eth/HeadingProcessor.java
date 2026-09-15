@@ -14,7 +14,7 @@ import static cn.p4u.eth.EpubPaths.targetFragment;
  * 标题处理器，根据导航目标在章节 DOM 中插入标题。
  *
  * <p>它接收 {@link NavigationReader} 的解析结果，不重新读取目录文件。
- * {@link ConversionPipeline} 在样式处理之后调用它，然后继续媒体处理与章节合并。
+ * 当前转换流水线不调用此历史工具：目录标题仅保存在 TocItem.label 中。
  * 优先将目录确认的原有标题转为 h1～h6，否则插入标题；不重排正文。
  */
 final class HeadingProcessor {
@@ -24,7 +24,7 @@ final class HeadingProcessor {
   /**
    * 在正文对应位置插入目录标题，原地修改章节 DOM。
    *
-   * <p>由流水线在样式处理之后调用。标题置于对应正文块之前；目标为 body 时放在其内部开头，
+   * <p>仅供独立标题处理使用，当前转换流水线不调用。标题置于对应正文块之前；目标为 body 时放在其内部开头，
    * 避免章节合并时丢失。段落内的行内锚点提升到所在正文块。
    * 原有节点确认为目录标题时改为 h1～h6，保留其属性和行内内容；
    * 普通正文不会转换为标题，缺失锚点的目录项会被跳过。

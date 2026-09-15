@@ -1,4 +1,6 @@
-# epub2Html4j
+# epub-to-html
+
+初学者可先阅读 [设计模式与源码阅读指南](docs/design.md)，了解门面、资源策略、目录组合结构和片段处理管道。
 
 基于 JDK 21 的 Maven 解析库：按 EPUB 目录读取正文并返回 List<TocItem> 章节树。每个节点的 content 保存正文 HTML 片段，不再插入目录标题；章节标题独立保存在 label 中，尽力将外部 CSS 转为内联样式，并通过统一接口处理图片、音频、视频等资源。
 
@@ -128,6 +130,9 @@ src/main/java/cn/p4u/eth/
 ├── NavigationReader.java       # NCX / EPUB 3 目录树
 ├── TocItem.java                # target、level、label、content、children
 ├── TocContentReader.java       # 根据目录目标填充 content
+├── ChapterReadPlan.java        # 目录树按文件分组，保持原节点与顺序
+├── FragmentPipeline.java       # 媒体 → 图注 → 可选属性清理
+├── ResourceResolver.java       # 一次转换的资源读取、策略委托与成功缓存
 ├── ChapterRange.java           # 同页锚点区间裁剪
 ├── HeadingProcessor.java       # 历史标题工具（不再用于转换流水线）
 ├── StyleProcessor.java         # CSS 内联
@@ -152,7 +157,9 @@ HtmlAssembler、TocHtmlWriter 和 ConversionResult 已移除。库只填充并�
 | NavigationReader / PackageReader | 提供目录树和包描述，不读取正文内容。 |
 | TocContentReader | 遍历树建立目标读取计划，逐文件处理并填充节点自身内容。 |
 | ChapterRange | 根据节点位置裁剪 HTML，保留区间内正文及必要祖先结构。 |
-| 样式、标题、媒体处理器 | 复用现有转换规则，不直接负责整书拼接。 |
+| FragmentPipeline | 组合片段加工步骤，明确顺序与异常传播。 |
+| ResourceResolver | 读取媒体并缓存成功 URL，生命周期为一次转换。 |
+| 样式、媒体、图注处理器 | 各自执行一种 DOM 处理；历史标题工具不参与转换。 |
 
 初学者建议依次阅读 EpubConverter、ConversionPipeline、TocItem、TocContentReader、ChapterRange，再查看各专项处理器。中文 Javadoc 解释参数和结果，行内注释解释去重、区间裁剪及生命周期。
 
@@ -261,6 +268,7 @@ EpubConverter.convert
          → StyleProcessor.inlineStyles
          → ChapterRange.copy
          → MediaProcessor.rewriteMedia
+             → ResourceResolver.resolve
              → EpubResourceHandler.handle
          → TocItem.setContent
  → 关闭 ZipFile 并返回 List<TocItem>
@@ -311,11 +319,12 @@ mvn test
 mvn package
 ~~~
 
-当前 37 个测试覆盖：
+当前 39 个测试覆盖：
 
 | 测试类 | 核心覆盖 |
 | --- | --- |
-| EpubConverterTest | 现有真实 EPUB 的本地与 Base64 转换。 |
+| EpubConverterTest | 自动构造 EPUB 的本地与 Base64 转换、图注和属性清理。 |
+| ResourceResolverTest | 成功缓存、跨会话隔离、缺失资源及失败不缓存。 |
 | ConversionPipelineTest | 目录目标读取、输入流与路径返回树一致、无 HTML 文件输出、失败传播及临时文件清理。 |
 | HeadingProcessorTest | 标题 h1～h6、锚点、原有标题和属性保留。 |
 | NavigationReaderTest | NCX / EPUB 3 父子树及分组节点。 |
@@ -325,7 +334,7 @@ mvn package
 | EncodedResourceTest | 带空格章节路径、编码中文图片名、字面百分号与加号，以及项目 demo.epub 图片回写。 |
 | TocContentReaderTest | content 实际归属、目录覆盖 spine、父子不重复、同目标只读取一次、失效锚点失败。 |
 
-测试报告位于 target/surefire-reports。现有真实样例测试包含 E: 盘上的本机输入路径，换环境时需提供对应 EPUB；本地媒体写入测试临时目录，测试不写出 HTML；其他用例使用构造归档和临时目录。
+测试报告位于 target/surefire-reports。测试通过 EpubFixture 和各用例的小型归档构造输入，不依赖 E: 盘或项目外的 EPUB；媒体写入测试临时目录，不向固定路径写出 HTML。
 
 ### 标题与正文分离
 

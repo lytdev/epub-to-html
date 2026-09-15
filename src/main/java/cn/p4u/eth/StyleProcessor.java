@@ -18,7 +18,7 @@ import static cn.p4u.eth.EpubPaths.resolve;
 /**
  * 样式处理器，把 EPUB 中链接的 CSS 规则尽量转换为元素的内联 style。
  *
- * <p>由流水线在标题和媒体处理前调用。CSS 选择器描述“哪些元素受影响”，声明描述“设置哪些属性”。
+ * <p>由内容读取器在区间裁剪前调用。CSS 选择器描述“哪些元素受影响”，声明描述“设置哪些属性”。
  * 本类先收集文本，再拆分规则，最后匹配 DOM。其简化算法不等同于浏览器完整 CSS 计算。
  */
 final class StyleProcessor {
@@ -59,7 +59,7 @@ final class StyleProcessor {
   /**
    * 读取章节外部样式并写入匹配元素的 style 属性。
    *
-   * <p>由流水线先于标题处理调用。仅收集 link 引用的样式，不处理 head 中的 style 标签；现有实现会删除所有带 href 的 link，包括非样式链接。
+   * <p>在完整 DOM 上执行，保留选择器匹配所需的祖先结构。仅收集 link 引用的样式，不处理 head 中的 style 标签；现有实现会删除所有带 href 的 link，包括非样式链接。
    *
    * @param zip EPUB 归档，供 CSS 读取使用
    * @param doc 待原地修改的章节 DOM

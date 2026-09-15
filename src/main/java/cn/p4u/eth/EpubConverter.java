@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * 将 EPUB 解析为已填充章节内容的目录树，不合并或保存完整 HTML。
+ * 门面模式（Facade）：为调用方提供统一入口，隐藏 ZIP、导航和正文处理组件。
  *
  * <p>节点 content 是不额外插入目录标题的正文 HTML 片段，标题独立保存在 label，子章节通过 children 独立保存。
  * 调用方负责展示、合并或持久化；资源存储由 {@link EpubResourceHandler} 决定。
@@ -42,17 +42,17 @@ public final class EpubConverter {
    *
    * @param epub 可读取的 EPUB 文件路径
    * @param resourceHandler 同步资源策略，须返回非空白 URL
-   * @param isRemoveClass true 时同时删除正文所有元素的 class 和 id；默认重载使用 false
+   * @param removeClasses true 时同时删除正文所有元素的 class 和 id；默认重载使用 false
    * @return 已填充 content 的章节树，子章节独立保存在 children 中
    * @throws NullPointerException epub 或 resourceHandler 为 null 时抛出
    * @throws IOException EPUB 读取、解析或资源处理失败时抛出
    */
   public List<TocItem> convert(
-      Path epub, EpubResourceHandler resourceHandler, boolean isRemoveClass) throws IOException {
+      Path epub, EpubResourceHandler resourceHandler, boolean removeClasses) throws IOException {
     Objects.requireNonNull(epub, "epub");
     Objects.requireNonNull(resourceHandler, "resourceHandler");
     // 在返回前读取全部内容并关闭 ZIP，返回值不依赖打开的归档。
-    return new ConversionPipeline().convert(epub, resourceHandler, isRemoveClass);
+    return new ConversionPipeline().convert(epub, resourceHandler, removeClasses);
   }
 
   /**

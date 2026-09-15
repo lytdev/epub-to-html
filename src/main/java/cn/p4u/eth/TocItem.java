@@ -4,7 +4,7 @@ import java.util.List;
 import java.util.ArrayList;
 
 /**
- * 目录树的可变节点，由 NavigationReader 创建，供标题处理及调用方展示目录使用。
+ * 组合结构（Composite）：章节与分组使用同一种节点，通过 children 递归组成目录树。
  *
  * <p>根列表只放一级节点，子目录放入 children。叶子 children 为空列表；
  * 无正文链接的分组节点 target 为 null。保留 JavaBean getter/setter 与原访问器别名。
@@ -15,7 +15,7 @@ public class TocItem {
   private String target;
   /**  level 原始导航层级，从 1 开始；标题处理时才限制到 HTML 的 1 至 6 */
   private Integer level;
-  /**  label 目录显示文字，用作新增标题的文本 */
+  /** 目录显示文字，与 content 分离；转换流程不据此生成正文标题。 */
   private String label;
   /** 当前目录项自己的正文 HTML 片段，不插入 label 标题，不包含 children 的内容；原正文标题保留。 */
   private String content = "";

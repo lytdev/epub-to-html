@@ -23,10 +23,11 @@ class EncodedResourceTest {
   }
 
   @Test
-  void projectDemoImageIsPassedToHandlerAndRewrittenInContent() throws Exception {
+  void encodedImageIsPassedToHandlerAndRewrittenInContent(
+      @org.junit.jupiter.api.io.TempDir Path directory) throws Exception {
     String expected = "OEBPS/image/1.徽韵悠长：探索徽文化_fmt.png";
     var calls = new LinkedHashMap<String, Integer>();
-    var roots = new EpubConverter().convert(Path.of("demo.epub"), resource -> {
+    var roots = new EpubConverter().convert(EpubFixture.create(directory), resource -> {
       calls.merge(resource.archivePath(), 1, Integer::sum);
       assertTrue(resource.content().length > 0);
       return resource.archivePath().equals(expected)

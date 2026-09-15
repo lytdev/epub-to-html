@@ -9,8 +9,9 @@ import org.junit.jupiter.api.Test;
 /** 验证外部重置规则、具体段落规则和原始内联声明不会因合并而颠倒。 */
 class StyleProcessorTest {
   @Test
-  void demoParagraphRetainsResetBeforeSpecificMargin() throws Exception {
-    try (ZipFile zip = new ZipFile(Path.of("demo.epub").toFile())) {
+  void paragraphRetainsResetBeforeSpecificMargin(
+      @org.junit.jupiter.api.io.TempDir Path directory) throws Exception {
+    try (ZipFile zip = new ZipFile(EpubFixture.create(directory).toFile())) {
       var doc = Jsoup.parse(EpubArchive.read(zip, EpubArchive.requiredEntry(zip,
           "OEBPS/中华优秀传统文化概论 - 副本.xhtml")));
       var paragraph = doc.selectFirst("p.x----2");
