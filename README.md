@@ -22,16 +22,16 @@ mvn install
 
 ~~~xml
 <dependency>
-    <groupId>io.github.agilehub</groupId>
-    <artifactId>epub2html4j</artifactId>
+    <groupId>cn.p4u.agile</groupId>
+    <artifactId>epub-to-html</artifactId>
     <version>1.0.0</version>
 </dependency>
 ~~~
 
 | 产物 | 使用方式 |
 | --- | --- |
-| target/epub2html4j-1.0.0.jar | 常规库，使用 Maven 管理 jsoup 传递依赖。 |
-| target/epub2html4j-1.0.0-all.jar | 附带运行时依赖的库，适合单 JAR 分发；不是 Spring Boot 可执行应用。 |
+| target/epub-to-html-1.0.0.jar | 常规库，使用 Maven 管理 jsoup 传递依赖。 |
+| target/epub-to-html-1.0.0-all.jar | 附带运行时依赖的库，适合单 JAR 分发；不是 Spring Boot 可执行应用。 |
 
 Shade 未重定位 jsoup 包名，宿主若同时包含另一版本 jsoup，应检查依赖冲突。
 
@@ -61,8 +61,9 @@ List<TocItem> chapters = new EpubConverter().convert(input, resourceHandler, tru
 以下代码放在宿主服务方法内；file 为 MultipartFile，resourceHandler 为宿主提供的同步资源策略：
 
 ~~~java
-import io.github.agilehub.epub2html.EpubConverter;
-import io.github.agilehub.epub2html.TocItem;
+import cn.p4u.eth.EpubConverter;
+import cn.p4u.eth.TocItem;
+
 import java.io.InputStream;
 import java.util.List;
 
@@ -79,21 +80,24 @@ try (InputStream input = file.getInputStream()) {
 ### 文件输入与资源策略
 
 ~~~java
-import io.github.agilehub.epub2html.*;
+import cn.p4u.eth.EpubConverter;
+import cn.p4u.eth.LocalResourceHandler;
+import cn.p4u.eth.TocItem;
+
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Base64;
 
 // 本地媒体存储是调用方显式选择的策略，并不保存章节 HTML。
 List<TocItem> chapters = new EpubConverter().convert(
-    Path.of("book.epub"),
-    new LocalResourceHandler(Path.of("storage/book-assets"), "/assets/book-001"));
+        Path.of("book.epub"),
+        new LocalResourceHandler(Path.of("storage/book-assets"), "/assets/book-001"));
 
 // 不保存媒体文件：将资源编码为 data URL，直接写入对应节点的 content。
 List<TocItem> embedded = new EpubConverter().convert(
-    Path.of("book.epub"),
-    resource -> "data:" + resource.mediaType() + ";base64,"
-        + Base64.getEncoder().encodeToString(resource.content()));
+        Path.of("book.epub"),
+        resource -> "data:" + resource.mediaType() + ";base64,"
+                + Base64.getEncoder().encodeToString(resource.content()));
 ~~~
 
 宿主需自行将 /assets/book-001 映射到实际存储目录；库不配置 HTTP 路由。
@@ -117,7 +121,7 @@ Base64 会增加 content 大小。上传失败不会自动回滚已经保存的�
 ## 1. 项目组织结构
 
 ~~~text
-src/main/java/io/github/agilehub/epub2html/
+src/main/java/cn/p4u/eth/
 ├── EpubConverter.java          # Path / InputStream 公开入口
 ├── TemporaryEpub.java          # 输入流暂存及清理
 ├── ConversionPipeline.java     # 读取目录 → 填充内容 → 返回树

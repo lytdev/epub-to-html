@@ -2,12 +2,33 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-    <groupId>io.github.agilehub</groupId>
-    <artifactId>epub2html4j</artifactId>
+    <groupId>cn.p4u.agile</groupId>
+    <artifactId>epub-to-html</artifactId>
     <version>1.0.0</version>
-    <name>epub2html4j</name>
+    <name>epub-to-html</name>
     <description>EPUB parser returning a chapter tree with styled HTML fragments</description>
+    <url>https://github.com/lytdev/epub-to-html</url>
+    <licenses>
+        <license>
+            <name>Apache License Version 2.0, January 2004</name>
+            <url>http://www.apache.org/licenses/</url>
+        </license>
+    </licenses>
+    <developers>
+        <developer>
+            <name>lytdev</name>
+            <email>lytdev@outlook.com</email>
+        </developer>
+    </developers>
+    <scm>
+        <connection>scm:git:https://github.com/lytdev/epub-to-html.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/lytdev/epub-to-html.git</developerConnection>
+        <url>https://github.com/lytdev/epub-to-html</url>
+    </scm>
+
     <properties>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
@@ -25,7 +46,17 @@
         </dependency>
     </dependencies>
     <build>
+        <finalName>epub-to-html-${project.version}</finalName>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <source>21</source>
+                    <target>21</target>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
@@ -38,15 +69,98 @@
                 <executions>
                     <execution>
                         <phase>package</phase>
-                        <goals><goal>shade</goal></goals>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
                         <configuration>
+                            <!-- 生成附带 -cli 后缀的可执行 fat jar，保留原瘦 jar 供发布 -->
                             <shadedArtifactAttached>true</shadedArtifactAttached>
-                            <shadedClassifierName>all</shadedClassifierName>
+                            <shadedClassifierName>cli</shadedClassifierName>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>cn.p4u.dth.cli.CliRunner</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
                         </configuration>
                     </execution>
                 </executions>
             </plugin>
         </plugins>
     </build>
+    <profiles>
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <!-- 1. 源码插件 -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>3.4.0</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <!-- 2. Javadoc 插件 -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>3.12.0</version>
+                        <configuration>
+                            <!-- 关闭严格的文档检查，避免因注释问题导致构建失败 -->
+                            <doclint>none</doclint>
+                            <!-- 确保即使生成 Javadoc 时有错误，也不会让整个构建失败 -->
+                            <failOnError>true</failOnError>
+                            <!-- 如果使用 JDK 21 且插件版本有兼容性问题，可以添加此配置 -->
+                            <disableNoFonts>true</disableNoFonts>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <!-- 3. GPG 签名插件 -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.2.8</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.11.0</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <!--需要与 settings.xml 中 <server> 的 <id> 一致-->
+                            <publishingServerId>central-p4u</publishingServerId>
+                            <!--表示上传后需要手动在 Portal 上确认发布（设为 true 则自动发布）-->
+                            <autoPublish>false</autoPublish>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>
