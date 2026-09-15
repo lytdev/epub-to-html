@@ -4,9 +4,9 @@
 
 基于 JDK 21 的 Maven 解析库：按 EPUB 目录读取正文并返回 List<TocItem> 章节树。每个节点的 content 保存正文 HTML 片段，不再插入目录标题；章节标题独立保存在 label 中，尽力将外部 CSS 转为内联样式，并通过统一接口处理图片、音频、视频等资源。
 
-项目采用“门面入口 → 转换流水线 → 专职组件”的结构，适合嵌入 Spring Boot 等 Java 应用。宿主项目负责文件接收、静态资源路由以及云端上传等业务；本库不包含 HTTP 服务、数据库、OSS SDK 或命令行入口。
+项目采用“门面入口 → 转换流水线 → 专职组件”的结构，可嵌入 Spring Boot，也可打包后在 Linux 命令行运行。宿主项目负责 HTTP 服务、数据库及 OSS SDK 等业务。
 
-库不合并整书 HTML，也不将 HTML 写入本地；最终展示和存储由调用方决定。使用本地或云存储策略时，content 中仍引用外部资源。源码包含中文职责说明、方法参数与返回值说明，以及关键循环、递归和归档读取注释，阅读路线见第 1 节。
+转换门面返回章节树；命令行通过 util.TocSupport 生成 HTML 或 JSON 并保存文件。使用本地或云存储策略时，content 中仍引用外部资源。源码包含中文职责说明、方法参数与返回值说明，以及关键循环、递归和归档读取注释，阅读路线见第 1 节。
 
 ## 快速开始
 
@@ -33,9 +33,113 @@ mvn install
 | 产物 | 使用方式 |
 | --- | --- |
 | target/epub-to-html-1.0.0.jar | 常规库，使用 Maven 管理 jsoup 传递依赖。 |
-| target/epub-to-html-1.0.0-all.jar | 附带运行时依赖的库，适合单 JAR 分发；不是 Spring Boot 可执行应用。 |
+| target/epub-to-html-1.0.0-cli.jar | 附带运行时依赖及命令行入口，可使用 `java -jar` 直接运行。 |
 
 Shade 未重定位 jsoup 包名，宿主若同时包含另一版本 jsoup，应检查依赖冲突。
+
+### CLI 命令行调用
+
+执行 `mvn clean package` 后，使用包含运行时依赖和 `Main-Class` 的 `target/epub-to-html-1.0.0-cli.jar`。普通的 `epub-to-html-1.0.0.jar` 是供其他 Java 项目依赖的库，不能直接通过 `java -jar` 启动。
+
+运行环境需要 JRE/JDK 21。部署到 Linux 后可先检查版本和帮助信息：
+
+~~~bash
+java -version
+java -jar epub-to-html-1.0.0-cli.jar --help
+~~~
+
+完整语法：
+
+~~~text
+java -jar epub-to-html-1.0.0-cli.jar \
+  -i <input.epub> \
+  [-o <output>] \
+  [-f <html|json>] \
+  [-m <base64|local>] \
+  [-d]
+~~~
+
+| 短参数 | 长参数 | 是否必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `-i <file>` | `--input <file>` | 是 | 无 | 输入 EPUB 文件，文件必须存在且可读。 |
+| `-o <path>` | `--output <path>` | 否 | 输入文件所在目录 | 输出文件或目录，详细判定规则见下文。 |
+| `-f <html\|json>` | `--format <html\|json>` | 否 | `html` | 生成合并后的 HTML 片段，或保留章节树结构的 JSON。 |
+| `-m <base64\|local>` | `--media-handler <base64\|local>` | 否 | `local` | 将图片等资源内嵌为 Data URL，或保存至本地 `assets/`。 |
+| `-d` | `--delete-class` | 否 | 关闭 | 删除正文元素的 `class` 和 `id` 属性。 |
+| `-h` | `--help` | 否 | 无 | 显示帮助并以退出码 `0` 结束。 |
+
+长参数也支持等号形式，例如 `--format=json` 和 `--media-handler=base64`。
+
+#### 常用示例
+
+使用默认配置。结果写到 EPUB 所在目录的 `chapters.html`，媒体资源写入同目录的 `assets/`：
+
+~~~bash
+java -jar epub-to-html-1.0.0-cli.jar -i /data/books/book.epub
+~~~
+
+指定输出目录并清理正文的 `class` 和 `id`：
+
+~~~bash
+java -jar epub-to-html-1.0.0-cli.jar \
+  -i /data/books/book.epub \
+  -o /data/books/book-result \
+  -f html \
+  -m local \
+  -d
+~~~
+
+输出为指定 JSON 文件，并把媒体直接内嵌到各章节的 `content`：
+
+~~~bash
+java -jar epub-to-html-1.0.0-cli.jar \
+  --input=/data/books/book.epub \
+  --output=/data/books/book.json \
+  --format=json \
+  --media-handler=base64
+~~~
+
+Windows PowerShell 调用方式相同，含空格的路径需要使用引号：
+
+~~~powershell
+java -jar .\target\epub-to-html-1.0.0-cli.jar `
+  -i "D:\EPUB Books\book.epub" `
+  -o "D:\EPUB Books\result" `
+  -f html `
+  -m local
+~~~
+
+#### 输出路径规则
+
+- 省略 `-o`：在输入文件所在目录生成 `chapters.html` 或 `chapters.json`。
+- `-o` 指向已存在目录：在该目录生成 `chapters.<format>`。
+- `-o` 指向不存在且不以 `.html` 或 `.json` 结尾的路径：创建该目录并生成 `chapters.<format>`。
+- `-o` 指向文件，或不存在但以 `.html`/`.json` 结尾：直接写入该文件。
+- `local` 模式把媒体保存到最终输出文件同级的 `assets/`，正文资源地址以 `assets/` 开头。
+- `base64` 模式不创建 `assets/`，但会增加 HTML 或 JSON 文件大小。
+
+输出文件不能与输入 EPUB 是同一路径。显式使用 `.html` 或 `.json` 后缀时，扩展名必须与 `--format` 一致，避免内容和文件类型不匹配。HTML 输出是按目录顺序合并的 HTML 片段，不包含额外的 `html`、`head`、`body` 外壳；JSON 输出包含每个节点的 `target`、`level`、`label`、`content` 和 `children`。
+
+启用 `-d` 会同时删除 `class` 和 `id`。如果正文依赖锚点链接、SVG 内部引用或基于 class/id 的交互，不应启用此选项。
+
+#### 退出码与脚本调用
+
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 转换并写入成功，或正常显示帮助。 |
+| `1` | EPUB 解析、资源处理或输出写入失败。 |
+| `2` | 参数错误，或输入文件不存在、不可读。 |
+
+Linux 脚本可根据退出码停止后续任务：
+
+~~~bash
+java -jar epub-to-html-1.0.0-cli.jar -i /data/books/book.epub -o /data/output
+exit_code=$?
+if [ "$exit_code" -ne 0 ]; then
+  echo "EPUB 转换失败，退出码: $exit_code" >&2
+  exit "$exit_code"
+fi
+~~~
 
 ### 公开 API 与迁移说明
 
@@ -68,7 +172,7 @@ List<TocItem> chapters = new EpubConverter().convert(input, resourceHandler, tru
 
 ~~~java
 import cn.p4u.eth.EpubConverter;
-import cn.p4u.eth.TocItem;
+import cn.p4u.eth.model.TocItem;
 
 import java.io.InputStream;
 import java.util.List;
@@ -87,8 +191,8 @@ try (InputStream input = file.getInputStream()) {
 
 ~~~java
 import cn.p4u.eth.EpubConverter;
-import cn.p4u.eth.LocalResourceHandler;
-import cn.p4u.eth.TocItem;
+import cn.p4u.eth.resource.LocalResourceHandler;
+import cn.p4u.eth.model.TocItem;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -128,31 +232,61 @@ Base64 会增加 content 大小。上传失败不会自动回滚已经保存的�
 
 ~~~text
 src/main/java/cn/p4u/eth/
-├── EpubConverter.java          # Path / InputStream 公开入口
-├── TemporaryEpub.java          # 输入流暂存及清理
-├── ConversionPipeline.java     # 读取目录 → 填充内容 → 返回树
-├── NavigationReader.java       # NCX / EPUB 3 目录树
-├── TocItem.java                # target、level、label、content、children
-├── TocContentReader.java       # 根据目录目标填充 content
-├── ChapterReadPlan.java        # 目录树按文件分组，保持原节点与顺序
-├── FragmentPipeline.java       # 媒体 → 图注 → 可选属性清理
-├── ResourceResolver.java       # 一次转换的资源读取、策略委托与成功缓存
-├── ChapterRange.java           # 同页锚点区间裁剪
-├── HeadingProcessor.java       # 历史标题工具（不再用于转换流水线）
-├── StyleProcessor.java         # CSS 内联
-├── MediaProcessor.java         # HTML / SVG 资源处理
-├── FigureProcessor.java        # 图片与紧邻图注组合为 figure
-├── EpubResourceHandler.java    # 调用方资源策略
-├── LocalResourceHandler.java   # 本地存储实现
-├── EpubResource.java           # 资源数据
-├── PackageReader.java          # container.xml / OPF
-├── PackageData.java            # 包信息
-├── EpubArchive.java            # 归档条目读取
-├── EpubXml.java                # XML 安全解析
-└── EpubPaths.java              # 引用路径处理
+├── EpubConverter.java             # 门面：公开转换入口
+├── model/
+│   └── TocItem.java               # 组合结构：章节与子章节
+├── callback/
+│   ├── FileParseCallback.java     # 进度、错误、完成通知
+│   └── CallBackRecord.java        # 单次通知的数据
+├── resource/
+│   ├── EpubResourceHandler.java   # 策略接口
+│   ├── LocalResourceHandler.java  # 本地存储策略
+│   └── EpubResource.java          # 资源描述
+├── internal/
+│   ├── pipeline/
+│   │   └── ConversionPipeline.java # 转换编排与归档生命周期
+│   ├── archive/
+│   │   ├── EpubArchive.java       # ZIP 条目读取
+│   │   ├── EpubPaths.java         # EPUB 路径解析
+│   │   ├── EpubXml.java           # 安全 XML 解析（包内）
+│   │   ├── PackageReader.java     # container.xml / OPF
+│   │   ├── PackageData.java       # 包解析结果
+│   │   ├── NavigationReader.java  # NCX / EPUB 3 导航
+│   │   └── TemporaryEpub.java     # 输入流暂存与清理
+│   └── content/
+│       ├── TocContentReader.java  # 内容处理的跨包入口
+│       ├── ChapterReadPlan.java   # 以下组件均为包内实现
+│       ├── ChapterRange.java
+│       ├── FragmentPipeline.java
+│       ├── StyleProcessor.java
+│       ├── MediaProcessor.java
+│       ├── FigureProcessor.java
+│       ├── ResourceResolver.java
+│       ├── HeadingProcessor.java # 历史标题工具，不参与转换
+│       └── TocSupport.java       # 内部片段汇总辅助
+├── util/
+│   ├── StringUtil.java            # 字符串空白判断
+│   └── TocSupport.java            # 命令行 HTML/JSON 输出
+└── cli/
+    └── CliRunner.java             # java -jar 入口
 ~~~
 
-HtmlAssembler、TocHtmlWriter 和 ConversionResult 已移除。库只填充并返回 TocItem 内容树；最终输出完全由调用方负责。项目仍是一个 Maven 模块，内部处理器保持包内可见。
+HtmlAssembler、TocHtmlWriter 和 ConversionResult 已移除。转换门面填充并返回 TocItem 内容树；命令行或宿主通过输出辅助工具消费。项目仍是一个 Maven 模块，包边界与可见性说明见下节。
+
+### 包迁移说明
+
+这是源码和二进制不兼容的包迁移，已有宿主需要更新 import 并重新编译。Maven 坐标和 convert 方法参数语义保持不变；不保留同名转发类，以免形成两套模型。
+
+| 类型 | 新包 |
+| --- | --- |
+| EpubConverter | cn.p4u.eth（不变） |
+| TocItem | cn.p4u.eth.model |
+| EpubResource、EpubResourceHandler、LocalResourceHandler | cn.p4u.eth.resource |
+| FileParseCallback、CallBackRecord | cn.p4u.eth.callback |
+| CliRunner | cn.p4u.eth.cli |
+
+`internal.*` 下部分类因跨包调用声明为 public，但属于内部实现，不承诺兼容。内容处理器、资源会话、区间裁剪等继续保持包内可见。测试按被测组件放在对应包，共享构造数据和断言工具在测试专用的 `cn.p4u.eth.support` 包中。
+
 
 | 组件 | 职责与边界 |
 | --- | --- |
@@ -229,7 +363,7 @@ EPUB / 输入流
 
 ### 技术选型与限制
 
-图片图注自动组合：完成样式、标题及资源处理后，若 img 紧邻的 p、div 或 span 以“图＋阿拉伯数字/全角数字”开头（例如“图6　《神仙赴会图》东壁后部”），将两者转换为 figure，图片为 img，图注为 figcaption。figcaption 内仅保留文本，不嵌套 p、span 或链接；保留图注容器自身属性，子元素的样式和链接功能不再保留。随后仍遵守 removeClasses 清理选项。
+图片图注自动组合：完成样式及资源处理后，若 img 紧邻的 p、div 或 span 以“图＋阿拉伯数字/全角数字”开头（例如“图6　《神仙赴会图》东壁后部”），将两者转换为 figure，图片为 img，图注为 figcaption。figcaption 内仅保留文本，不嵌套 p、span 或链接；保留图注容器自身属性，子元素的样式和链接功能不再保留。随后仍遵守 removeClasses 清理选项。
 
 识别只忽略空白和注释，不跨过正文、其他元素或章节边界；支持仅含图片的 p/div 容器后接图注。不重复包装已有 figure，但会将已有 figcaption 的内部内容也转为文本；不自动把章节标题、含块级正文或媒体的复杂相邻容器识别为图注。新建 figure 使用 margin: 0，避免引入浏览器默认外边距；复用单图容器时保留其原属性。
 
@@ -245,7 +379,7 @@ EPUB / 输入流
 | JDK 21 ZipFile / JAXP | 随机访问 EPUB 条目，安全读取 OPF/NCX。 |
 | Jsoup 1.18.3 | XHTML DOM、节点裁剪、标题转换、属性修改和片段序列化。 |
 | 策略接口 | EpubResourceHandler 隔离本地、OSS、Base64 差异。 |
-| Maven Shade 3.6.0 | 保留普通 JAR，并生成 all 附加构件。 |
+| Maven Shade 3.6.0 | 保留普通 JAR，并生成 cli 可执行附加构件。 |
 | JUnit 5.11.4 | 验证目录结构、内容归属、顺序和资源策略。 |
 
 原有能力与限制继续适用：
@@ -271,9 +405,12 @@ EpubConverter.convert
      → TocContentReader.read
          → StyleProcessor.inlineStyles
          → ChapterRange.copy
-         → MediaProcessor.rewriteMedia
-             → ResourceResolver.resolve
-             → EpubResourceHandler.handle
+         → FragmentPipeline.process
+             → MediaProcessor.rewriteMedia
+                 → ResourceResolver.resolve
+                     → EpubResourceHandler.handle
+             → FigureProcessor.wrapCaptions
+             → 可选属性清理
          → TocItem.setContent
  → 关闭 ZipFile 并返回 List<TocItem>
  → 调用方独立处理结果
@@ -323,19 +460,21 @@ mvn test
 mvn package
 ~~~
 
-当前 39 个测试覆盖：
+当前 51 个测试覆盖：
 
 | 测试类 | 核心覆盖 |
 | --- | --- |
 | EpubConverterTest | 自动构造 EPUB 的本地与 Base64 转换、图注和属性清理。 |
+| CliRunnerTest | 默认输出位置、HTML/JSON 与资源策略、参数边界、覆盖保护、退出码及输出转义。 |
+| FileParseCallbackTest | 顶层项目进度、完成回调、错误序号与异常传播。 |
 | ResourceResolverTest | 成功缓存、跨会话隔离、缺失资源及失败不缓存。 |
 | ConversionPipelineTest | 目录目标读取、输入流与路径返回树一致、无 HTML 文件输出、失败传播及临时文件清理。 |
 | HeadingProcessorTest | 标题 h1～h6、锚点、原有标题和属性保留。 |
 | NavigationReaderTest | NCX / EPUB 3 父子树及分组节点。 |
 | SvgResourceTest | SVG 封面 href/xlink:href 和资源去重。 |
 | FigureProcessorTest | 紧邻图注、单图段落、图注纯文本与属性保留、文本转义、非图注排除及重复调用。 |
-| StyleProcessorTest | demo.epub 的全局重置与段落下边距顺序、原始内联样式、简写/长写及重复声明保留；拼接时不额外添加双分号，保留属性值内分号。 |
-| EncodedResourceTest | 带空格章节路径、编码中文图片名、字面百分号与加号，以及项目 demo.epub 图片回写。 |
+| StyleProcessorTest | 构造归档的全局重置与段落下边距顺序、原始内联样式、简写/长写及重复声明保留；拼接时不额外添加双分号，保留属性值内分号。 |
+| EncodedResourceTest | 带空格章节路径、编码中文图片名、字面百分号与加号，以及构造归档的图片回写。 |
 | TocContentReaderTest | content 实际归属、目录覆盖 spine、父子不重复、同目标只读取一次、失效锚点失败。 |
 
 测试报告位于 target/surefire-reports。测试通过 EpubFixture 和各用例的小型归档构造输入，不依赖 E: 盘或项目外的 EPUB；媒体写入测试临时目录，不向固定路径写出 HTML。

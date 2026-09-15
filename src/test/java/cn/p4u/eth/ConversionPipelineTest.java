@@ -1,5 +1,9 @@
 package cn.p4u.eth;
 
+import cn.p4u.eth.internal.archive.TemporaryEpub;
+import cn.p4u.eth.resource.EpubResourceHandler;
+import cn.p4u.eth.support.TocTestSupport;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;

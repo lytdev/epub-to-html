@@ -73,11 +73,30 @@
                             <goal>shade</goal>
                         </goals>
                         <configuration>
-                            <!-- 本项目是解析库：附带依赖的 all 构件没有命令行入口。 -->
+                            <!-- cli 构件包含依赖和 Main-Class，可直接在 Linux 上使用 java -jar。 -->
                             <shadedArtifactAttached>true</shadedArtifactAttached>
-                            <shadedClassifierName>all</shadedClassifierName>
+                            <shadedClassifierName>cli</shadedClassifierName>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <!--
+                              每个输入 JAR 都自带清单，直接合并既没有意义，也会产生重复资源警告。
+                              签名文件只对原 JAR 有效，内容合并后必须丢弃；最终清单由下方
+                              ManifestResourceTransformer 重新生成并写入 CLI 主类。
+                            -->
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/MANIFEST.MF</exclude>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
                             <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>cn.p4u.eth.cli.CliRunner</mainClass>
+                                </transformer>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                             </transformers>
                         </configuration>

@@ -1,26 +1,23 @@
 package cn.p4u.eth;
 
+import cn.p4u.eth.support.EpubFixture;
+import cn.p4u.eth.support.TocTestSupport;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.FileInputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
 import static org.junit.jupiter.api.Assertions.*;
 
 class EpubConverterTest {
-  static String dir = "E:\\_tmp\\epub\\";
+  @TempDir Path directory;
 
   @Test
   void delegatesResourcesAndUsesHandlerUrl() throws Exception {
-    Path epubPath = Path.of(dir + "demo1.epub");
-    if (!Files.exists(epubPath)) {
-      return;
-    }
-    String htmlPath = dir + "demo1.html";
+    Path epubPath = EpubFixture.create(directory);
     var result =
         new EpubConverter()
             .convert(
@@ -38,7 +35,9 @@ class EpubConverterTest {
                 });
 
     String html = TocTestSupport.content(result);
-    Files.writeString(Path.of(htmlPath), html);
+    var document = org.jsoup.Jsoup.parse(html);
+    assertEquals("data:image/png;base64,AQID", document.selectFirst("img").attr("src"));
+    assertTrue(document.select("[class], [id]").isEmpty());
   }
 
   /**

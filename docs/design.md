@@ -49,3 +49,36 @@
 运行 `mvn test`，确保 Maven 使用 JDK 21。`EpubFixture` 在临时目录生成小型 EPUB，全部测试均不依赖 E 盘或未提交的 demo.epub，也不向固定目录写 HTML。
 
 先读 `EpubConverterTest` 学习公开调用，再看 `ConversionPipelineTest` 的阶段顺序与异常、`TocContentReaderTest` 的父子内容归属，最后看 `ResourceResolverTest` 的缓存与失败契约。生成的测试归档旨在验证特定规则，真实复杂书籍仍适合另做手工兼容性验证。
+
+## 包边界与依赖方向
+
+
+### 包迁移说明
+
+这是源码和二进制不兼容的包迁移，已有宿主需要更新 import 并重新编译。Maven 坐标和 convert 方法参数语义保持不变；不保留同名转发类，以免形成两套模型。
+
+| 类型 | 新包 |
+| --- | --- |
+| EpubConverter | cn.p4u.eth（不变） |
+| TocItem | cn.p4u.eth.model |
+| EpubResource、EpubResourceHandler、LocalResourceHandler | cn.p4u.eth.resource |
+| FileParseCallback、CallBackRecord | cn.p4u.eth.callback |
+| CliRunner | cn.p4u.eth.cli |
+
+`internal.*` 下部分类因跨包调用声明为 public，但属于内部实现，不承诺兼容。内容处理器、资源会话、区间裁剪等继续保持包内可见。测试按被测组件放在对应包，共享构造数据和断言工具在测试专用的 `cn.p4u.eth.support` 包中。
+
+各包按职责分组；设计模式解释协作方式，不用于给每个类强行添加接口。
+
+```text
+cli → EpubConverter → internal.pipeline → internal.content → internal.archive
+cli → util → model（展示 HTML / JSON 输出）
+                   ↘ internal.archive（输入流适配）
+internal.pipeline → internal.archive（包描述与导航）
+内部实现 → model / resource / callback（公开契约）
+```
+
+model 不依赖解析实现；callback 仅引用模型；resource 不依赖门面或内部流程。包内 Javadoc 描述职责、扩展位置和状态生命周期。
+
+`util.TocSupport` 是公开输出辅助工具，会根据 label 增加展示标题；它与 `internal.content.TocSupport` 的内部正文汇总用途不同。转换门面本身仍只返回内容树。
+
+目录树与包名以 README 的项目组织结构为准。测试使用与被测组件相同的包，因此无需为了测试开放所有内部方法；support 只在 src/test 中，不进入发布 JAR。

@@ -1,5 +1,7 @@
 package cn.p4u.eth;
 
+import cn.p4u.eth.support.TocTestSupport;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.ByteArrayInputStream;
